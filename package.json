@@ -1,0 +1,50 @@
+{
+  "name": "ania-avatar-react",
+  "version": "1.0.0",
+  "description": "React component library for ANIA Avatar with TTS, STT, and chatbot integration",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "react": ">=17.0.0",
+    "react-dom": ">=17.0.0"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rob-d3v/ania-avatar-react.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rob-d3v/ania-avatar-react/issues"
+  },
+  "homepage": "https://github.com/rob-d3v/ania-avatar-react#readme",
+  "keywords": [
+    "react",
+    "avatar",
+    "tts",
+    "text-to-speech",
+    "stt",
+    "speech-to-text",
+    "chatbot",
+    "ania",
+    "animated-avatar",
+    "voice",
+    "webhook",
+    "n8n"
+  ],
+  "author": "robd3v",
+  "license": "MIT"
+}
