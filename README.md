@@ -6,6 +6,41 @@ A powerful React component library for animated avatars with Text-to-Speech (TTS
 ![React](https://img.shields.io/badge/react-%3E%3D17.0.0-61dafb.svg)
 ![TypeScript](https://img.shields.io/badge/typescript-supported-blue.svg)
 
+---
+
+## What is ANIA?
+
+**ANIA** (Animated Network Interactive Avatars) is a complete ecosystem for creating, customizing, and using animated avatars in your applications. Whether you're building chatbots, streaming overlays, virtual assistants, or interactive experiences - ANIA has you covered.
+
+### Get Avatars
+
+Visit **[aniamodels.shop](https://aniamodels.shop)** to:
+
+- Browse and download avatars from the **Marketplace**
+- Find free and premium avatar models
+- Discover avatars created by the community
+- Upload and sell your own avatar creations
+
+### ANIA Ecosystem Tools
+
+| Tool | Description | Download |
+|------|-------------|----------|
+| **ANIA Player** | Desktop application to play and interact with avatars. Perfect for streaming, presentations, and desktop use. | [Windows](https://github.com/rob-d3v/ania-player/releases) |
+| **ANIA Creators** | Create and customize your own animated avatars. Design unique characters with custom animations. | [Windows](https://github.com/rob-d3v/ania-creators/releases) |
+| **ANIA Avatar React** | This library! Integrate avatars into React/web applications with full TTS, STT, and chatbot support. | `npm install ania-avatar-react` |
+| **ANIA Avatar Extension** | Chrome extension to chat with your avatar on any website. Includes TTS, STT, and Wake Word detection. | [Download](https://github.com/rob-d3v/ania-avatar-extension) |
+
+### Use Cases
+
+- **Streaming & Gaming** - Animated avatar overlay for OBS/Twitch
+- **Customer Support** - 24/7 AI chatbot with a friendly face
+- **Education** - Interactive tutors and learning assistants
+- **E-commerce** - Product recommendation bots
+- **Presentations** - Engaging virtual presenters
+- **Websites** - Interactive chat widgets
+
+---
+
 ## Features
 
 - Animated avatar player with `.ania` file support
@@ -557,8 +592,34 @@ MIT License - see [LICENSE](./LICENSE) for details.
 
 ---
 
-## Related Projects
+## ANIA Ecosystem
 
-- [ANIA Player](https://github.com/rob-d3v/ania-player) - Desktop avatar player
-- [ANIA Creators](https://github.com/rob-d3v/ania-creators) - Avatar creation tool
-- [ANIA Avatar Extension](https://github.com/rob-d3v/ania-avatar-extension) - Chrome extension
+### Official Website & Marketplace
+
+**[aniamodels.shop](https://aniamodels.shop)** - The official ANIA platform where you can:
+
+- Download free and premium avatars
+- Explore the avatar marketplace
+- Upload and sell your creations
+- Access tutorials and guides
+- Join the community
+
+### Desktop & Mobile Tools
+
+| Tool | Platform | Description |
+|------|----------|-------------|
+| [ANIA Player](https://github.com/rob-d3v/ania-player) | Windows, Linux (soon) | Desktop application to play avatars. Use for streaming, presentations, or as a desktop companion. |
+| [ANIA Creators](https://github.com/rob-d3v/ania-creators) | Windows, Linux (soon) | Create and customize your own animated avatars with the visual editor. |
+
+### Web & Browser Tools
+
+| Tool | Platform | Description |
+|------|----------|-------------|
+| [ANIA Avatar React](https://github.com/rob-d3v/ania-avatar-react) | npm / Web | This library - integrate avatars into React applications. |
+| [ANIA Avatar Extension](https://github.com/rob-d3v/ania-avatar-extension) | Chrome | Browser extension to chat with your avatar on any website. |
+
+### Community
+
+- [YouTube](https://youtube.com/@robd3v) - Tutorials and guides
+- [Discord](#) - Community chat
+- [LinkedIn](https://www.linkedin.com/in/robseng/) - Connect with the developer
