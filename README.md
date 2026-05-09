@@ -45,7 +45,12 @@ Visit **[aniamodels.shop](https://aniamodels.shop)** to:
 
 - Animated avatar player with `.ania` file support
 - Complete chatbot UI with webhook integration
-- Text-to-Speech (TTS) - Multiple providers (Browser, TikTok, Google, ElevenLabs, Azure)
+- Text-to-Speech (TTS) - Multiple providers (Browser, TikTok, Google, ElevenLabs, Azure, **Piper**)
+- **Piper TTS** - Browser-side ONNX inference, no API keys needed
+- **Real-time lip sync** - FFT-driven mouth animation during speech
+- **Action frames** - Custom avatar gestures (wave, nod, etc.) triggered by hotkeys, API, or AI
+- **Initial action** - Play an action automatically when avatar loads
+- **LLM/Agent integration** - Connect to Ollama, Hermes, OpenAI, or any webhook
 - Speech-to-Text (STT) - Browser and Google Cloud support
 - File attachments support (images, documents)
 - Customizable themes (dark, light, blue, purple)
@@ -188,7 +193,7 @@ import { AniaAvatar } from 'ania-avatar-react';
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `enableTTS` | `boolean` | `true` | Enable text-to-speech |
-| `ttsProvider` | `'browser'` \| `'tiktok'` \| `'elevenlabs'` \| `'google'` \| `'azure'` | `'browser'` | TTS provider |
+| `ttsProvider` | `'browser'` \| `'tiktok'` \| `'elevenlabs'` \| `'google'` \| `'azure'` \| `'piper'` | `'browser'` | TTS provider |
 | `ttsVoice` | `string` | `'auto'` | Voice name (browser TTS) |
 | `ttsVoiceId` | `string` | - | Voice ID (cloud providers) |
 | `ttsGender` | `'auto'` \| `'male'` \| `'female'` | `'auto'` | Preferred voice gender |
@@ -215,6 +220,33 @@ import { AniaAvatar } from 'ania-avatar-react';
 | `sttAutoSend` | `boolean` | `true` | Auto-send when phrase ends |
 | `sttApiKey` | `string` | - | Google Cloud STT API key |
 | `sttApiUrl` | `string` | - | Custom STT API endpoint |
+
+### Piper TTS Props
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `piperModelUrl` | `string` | - | URL to Piper ONNX model file |
+| `piperModelConfigUrl` | `string` | - | URL to model config JSON |
+| `piperPitch` | `number` | `1` | Pitch adjustment (0.75-1.3) |
+| `piperSpeed` | `number` | `1` | Speed adjustment (0.75-1.3) |
+
+### Lip Sync Props
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `lipSyncEnabled` | `boolean` | `false` | Enable real-time lip sync |
+| `lipSyncServerUrl` | `string` | - | Server URL for keyframe config |
+| `lipSyncIntensity` | `number` | `0.6` | Sync intensity (0-1) |
+| `lipSyncResponsiveness` | `number` | `0.5` | Response speed (0.05-1) |
+
+### Action Frame Props
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `actions` | `ActionConfig[]` | - | Custom action configurations |
+| `enableActionHotkeys` | `boolean` | `true` | Enable keyboard shortcuts |
+| `initialAction` | `string` | - | Action ID to play on load |
+| `initialActionLoop` | `boolean` | `false` | Loop the initial action |
 
 ### Callbacks
 
@@ -324,20 +356,71 @@ const {
 
 ### `useAniaAvatarRef()`
 
-Direct avatar player control.
+Direct avatar player control with action and lip sync support.
 
 ```jsx
 import { useAniaAvatarRef } from 'ania-avatar-react';
 
-const { ref, setTalking, play, pause } = useAniaAvatarRef();
+const {
+  ref, setTalking, play, pause,
+  triggerAction, cancelAction, getAvailableActions,
+  setLipSyncEnabled, getLipSyncState
+} = useAniaAvatarRef();
 
 <AniaAvatar ref={ref} avatarUrl="/avatar.ania" />
 
-// Control
+// Basic control
 setTalking(true);
-setTalking(false);
 play();
 pause();
+
+// Actions
+const actions = getAvailableActions(); // [{ id: 'wave', name: 'Wave' }]
+triggerAction('wave');
+cancelAction();
+
+// Lip sync
+setLipSyncEnabled(true);
+const state = getLipSyncState(); // { enabled: true, envelope: 0.5 }
+```
+
+### `useLipSync(options)`
+
+Web Audio API lip sync analysis.
+
+```jsx
+import { useLipSync } from 'ania-avatar-react';
+
+const lipSync = useLipSync({ enabled: true, fftSize: 2048, smoothing: 0.8 });
+
+// Connect to an audio element
+lipSync.connectAudioElement(audioElement);
+
+// Read FFT data per frame
+const openness = lipSync.getSpectralOpenness(); // 0-1
+const flux = lipSync.getSpectralFlux();         // 0-1
+const amplitude = lipSync.getAmplitude();       // 0-1
+
+// Cleanup
+lipSync.disconnect();
+```
+
+### `useActionFrames(options)`
+
+Action frame management with keyboard shortcuts.
+
+```jsx
+import { useActionFrames } from 'ania-avatar-react';
+
+const { activeAction, availableActions, triggerAction, cancelAction } = useActionFrames({
+  actions: avatarData.actions,
+  enabled: true,
+  enableHotkeys: true,
+  animationController: player.animationController
+});
+
+triggerAction('wave');
+cancelAction();
 ```
 
 ---
@@ -488,6 +571,69 @@ const { count, size, sizeFormatted } = await getCacheStats();
 // }
 ```
 
+### Piper TTS (Browser ONNX - No API Key)
+
+```jsx
+<AvatarChatbot
+  avatarUrl="/avatar.ania"
+  avatarPassword="pw"
+  webhookUrl="/api/chat"
+  ttsProvider="piper"
+  piperModelUrl="https://cdn.example.com/models/en-us-amy-medium.onnx"
+  piperModelConfigUrl="https://cdn.example.com/models/en-us-amy-medium.onnx.json"
+  piperPitch={1.0}
+  piperSpeed={1.0}
+/>
+```
+
+### Lip Sync with ElevenLabs
+
+```jsx
+<AvatarChatbot
+  avatarUrl="/avatar.ania"
+  avatarPassword="pw"
+  webhookUrl="/api/chat"
+  ttsProvider="elevenlabs"
+  ttsApiKey="your-key"
+  lipSyncEnabled={true}
+  lipSyncServerUrl="https://your-server.com"
+  lipSyncIntensity={0.7}
+/>
+```
+
+### Action Frames with Initial Action
+
+```jsx
+<AvatarChatbot
+  avatarUrl="/avatar.ania"
+  avatarPassword="pw"
+  webhookUrl="/api/chat"
+  actions={[
+    { id: 'wave', name: 'Wave', hotkey: 'ctrl+shift+w', range_low: 900, range_high: 960, speed: 1.5 },
+    { id: 'nod', name: 'Nod', hotkey: 'ctrl+shift+n', range_low: 970, range_high: 1010, speed: 1.0 }
+  ]}
+  initialAction="wave"
+  initialActionLoop={false}
+  enableActionHotkeys={true}
+/>
+```
+
+### Ollama / Local LLM
+
+```jsx
+<AvatarChatbot
+  avatarUrl="/avatar.ania"
+  avatarPassword="pw"
+  webhookUrl="http://localhost:11434/api/chat"
+  formatRequest={(text) => ({
+    model: 'llama3',
+    messages: [{ role: 'user', content: text }],
+    stream: false
+  })}
+  parseResponse={(data) => data.message?.content}
+/>
+```
+
 ### Custom Implementation
 
 ```jsx
@@ -533,12 +679,19 @@ Full TypeScript support is included. Import types directly:
 import type {
   AniaAvatarProps,
   AvatarChatbotProps,
+  ActionConfig,
+  ActionInfo,
+  PiperStatus,
   ChatMessage,
   ChatAttachment,
   UseChatbotOptions,
   UseChatbotResult,
   UseTTSDetectionOptions,
   UseTTSDetectionResult,
+  UseLipSyncOptions,
+  UseLipSyncResult,
+  UseActionFramesOptions,
+  UseActionFramesResult,
   UseSpeechRecognitionOptions,
   UseSpeechRecognitionResult,
   UseAniaAvatarRefResult,
@@ -564,13 +717,14 @@ import type {
 
 ## TTS Providers Comparison
 
-| Provider | Free Tier | Quality | Languages |
-|----------|-----------|---------|-----------|
-| **Browser** | Unlimited | Varies by OS | All system voices |
-| **TikTok** | Unlimited | Good | Limited |
-| **Google Cloud** | 1M chars/month | Excellent | 50+ languages |
-| **ElevenLabs** | 10k chars/month | Premium | 20+ languages |
-| **Azure** | 500k chars/month | Excellent | 100+ languages |
+| Provider | Free Tier | Quality | Languages | Lip Sync |
+|----------|-----------|---------|-----------|----------|
+| **Browser** | Unlimited | Varies by OS | All system voices | No |
+| **TikTok** | Unlimited | Good | Limited | Yes |
+| **Piper** | Unlimited (local) | Good-Excellent | 20+ languages | Yes |
+| **Google Cloud** | 1M chars/month | Excellent | 50+ languages | Yes |
+| **ElevenLabs** | 10k chars/month | Premium | 20+ languages | Yes |
+| **Azure** | 500k chars/month | Excellent | 100+ languages | Yes |
 
 ---
 

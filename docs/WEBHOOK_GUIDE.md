@@ -293,6 +293,120 @@ const { sendMessage } = useChatbot({
 
 ---
 
+## Ollama / Local LLM
+
+Use `formatRequest` and `parseResponse` to connect to a local [Ollama](https://ollama.com/) instance — no cloud API keys required.
+
+### Ollama Setup
+
+1. Install Ollama and pull a model:
+
+```bash
+ollama pull llama3
+```
+
+2. Ollama runs by default on `http://localhost:11434`.
+
+### Connecting with formatRequest / parseResponse
+
+```jsx
+<AvatarChatbot
+  avatarUrl="/avatar.ania"
+  webhookUrl="http://localhost:11434/api/generate"
+
+  formatRequest={(text) => ({
+    model: "llama3",
+    prompt: text,
+    stream: false
+  })}
+
+  parseResponse={(data) => {
+    return data.response;
+  }}
+/>
+```
+
+### Chat-style (multi-turn) with Ollama
+
+```jsx
+<AvatarChatbot
+  avatarUrl="/avatar.ania"
+  webhookUrl="http://localhost:11434/api/chat"
+
+  formatRequest={(text, metadata) => ({
+    model: "llama3",
+    messages: [
+      { role: "system", content: "You are a helpful assistant." },
+      ...(metadata.history || []),
+      { role: "user", content: text }
+    ],
+    stream: false
+  })}
+
+  parseResponse={(data) => {
+    return data.message?.content || "Sorry, I could not generate a response.";
+  }}
+/>
+```
+
+> **CORS note:** If your front-end is on a different origin, start Ollama with `OLLAMA_ORIGINS=* ollama serve` or proxy requests through your own backend.
+
+---
+
+## Action Triggers
+
+Webhook responses can include **actions** that make the avatar perform animations or state changes in addition to speaking.
+
+### Response Format with Actions
+
+```json
+{
+  "output": "Let me show you something!",
+  "action": "celebrate"
+}
+```
+
+### Multiple Actions
+
+Return an array of actions to execute sequentially:
+
+```json
+{
+  "output": "Processing your request...",
+  "actions": [
+    { "type": "emote", "value": "thinking" },
+    { "type": "wait", "duration": 2000 },
+    { "type": "emote", "value": "happy" }
+  ]
+}
+```
+
+### Extracting Actions with parseResponse
+
+If your backend uses a non-standard response shape, parse actions out in `parseResponse`:
+
+```jsx
+<AvatarChatbot
+  webhookUrl="/api/chat"
+  parseResponse={(data) => {
+    return {
+      text: data.bot_reply,
+      action: data.animation_name || null
+    };
+  }}
+/>
+```
+
+### Supported Action Types
+
+| Action | Description |
+|--------|-------------|
+| `emote` | Trigger a named emote/animation on the avatar |
+| `wait` | Pause for a duration (ms) before the next action |
+| `setState` | Change the avatar's persistent state (e.g., `idle`, `happy`) |
+
+---
+
 ## Error Handling
 
 ### On the Server

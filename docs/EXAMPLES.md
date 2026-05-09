@@ -450,6 +450,190 @@ function CustomChat() {
 
 ---
 
+## Piper TTS (Offline Browser TTS)
+
+Run TTS entirely client-side with no API keys using Piper ONNX models:
+
+```jsx
+import { AvatarChatbot } from 'ania-avatar-react';
+
+function OfflineTTSBot() {
+  return (
+    <AvatarChatbot
+      avatarUrl="/avatars/assistant.ania"
+      webhookUrl="/api/chat"
+
+      // Piper TTS — fully offline after first model download
+      enableTTS={true}
+      ttsProvider="piper"
+      piperModelUrl="https://cdn.example.com/models/en-us-amy-medium.onnx"
+      piperModelConfigUrl="https://cdn.example.com/models/en-us-amy-medium.onnx.json"
+      piperPitch={1.0}
+      piperSpeed={1.0}
+
+      assistantName="Amy"
+      position="bottom-right"
+    />
+  );
+}
+```
+
+> The ONNX model (~81 MB) is downloaded once and cached in the browser's OPFS.
+> See [Piper Guide](./PIPER_GUIDE.md) and [TTS Guide](./TTS_GUIDE.md#piper-tts-browser-onnx) for full details.
+
+---
+
+## Lip Sync
+
+Enable automatic lip-sync so the avatar's mouth follows audio amplitude:
+
+```jsx
+import { AvatarChatbot } from 'ania-avatar-react';
+
+function LipSyncBot() {
+  return (
+    <AvatarChatbot
+      avatarUrl="/avatars/presenter.ania"
+      webhookUrl="/api/chat"
+
+      enableTTS={true}
+      ttsProvider="google"
+      ttsApiKey={process.env.REACT_APP_GOOGLE_TTS_KEY}
+      ttsVoiceId="en-US-Neural2-J"
+
+      // Lip-sync settings
+      enableLipSync={true}
+      lipSyncSensitivity={1.2}    // Amplify mouth movement (default 1.0)
+      lipSyncSmoothing={0.6}      // Smooth transitions between frames
+
+      assistantName="Alex"
+      position="bottom-right"
+    />
+  );
+}
+```
+
+---
+
+## Action Frames
+
+Use action frames to trigger avatar animations from webhook responses:
+
+```jsx
+import { AvatarChatbot } from 'ania-avatar-react';
+
+function ActionFrameBot() {
+  return (
+    <AvatarChatbot
+      avatarUrl="/avatars/mascot.ania"
+      webhookUrl="/api/chat"
+
+      // Parse action from webhook response
+      parseResponse={(data) => ({
+        text: data.output,
+        action: data.action || null  // e.g. "wave", "celebrate", "thinking"
+      })}
+
+      // Callback when an action fires
+      onAction={(action) => {
+        console.log('Avatar action triggered:', action);
+      }}
+
+      enableTTS={true}
+      ttsProvider="browser"
+      assistantName="Mascot"
+      position="bottom-right"
+    />
+  );
+}
+```
+
+**Server-side response example:**
+
+```json
+{
+  "output": "Great choice! Here is your order summary.",
+  "action": "celebrate"
+}
+```
+
+---
+
+## Ollama Integration (Local LLM)
+
+Connect to a locally-running Ollama instance — no cloud API keys needed:
+
+```jsx
+import { AvatarChatbot } from 'ania-avatar-react';
+
+function OllamaBot() {
+  return (
+    <AvatarChatbot
+      avatarUrl="/avatars/assistant.ania"
+
+      webhookUrl="http://localhost:11434/api/generate"
+
+      formatRequest={(text) => ({
+        model: "llama3",
+        prompt: text,
+        stream: false
+      })}
+
+      parseResponse={(data) => data.response}
+
+      // Use free browser TTS alongside local LLM
+      enableTTS={true}
+      ttsProvider="browser"
+      ttsLang="en-US"
+
+      assistantName="Llama"
+      position="bottom-right"
+      theme="dark"
+    />
+  );
+}
+```
+
+> Start Ollama with `OLLAMA_ORIGINS=* ollama serve` if your front-end runs on a different origin.
+> See the [Webhook Guide](./WEBHOOK_GUIDE.md#ollama--local-llm) for multi-turn chat examples.
+
+---
+
+## Initial Action (Greeting Animation)
+
+Trigger an animation or action when the avatar first loads:
+
+```jsx
+import { AvatarChatbot } from 'ania-avatar-react';
+
+function GreetingBot() {
+  return (
+    <AvatarChatbot
+      avatarUrl="/avatars/greeter.ania"
+      webhookUrl="/api/chat"
+
+      // Trigger a wave animation on load
+      initialAction="wave"
+
+      // Auto-greeting combines nicely with initialAction
+      autoGreeting={true}
+      greetingMessage="Hi there! Welcome to our store."
+
+      enableTTS={true}
+      ttsProvider="browser"
+      ttsLang="en-US"
+
+      assistantName="Greeter"
+      position="bottom-right"
+    />
+  );
+}
+```
+
+The `initialAction` fires once after the avatar fully loads, before any user interaction.
+
+---
+
 ## More Examples
 
 - Check the [README](../README.md) for prop references

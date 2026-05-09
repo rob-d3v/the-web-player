@@ -175,6 +175,53 @@ Use `authToken` for protected avatar files:
 />
 ```
 
+## Optional: Piper TTS Setup
+
+[Piper TTS](https://github.com/rhasspy/piper) lets you run text-to-speech entirely in the browser using ONNX models — no API keys or cloud services required.
+
+### 1. Install the Piper package
+
+```bash
+# npm
+npm install @mintplex-labs/piper-tts-web
+
+# yarn
+yarn add @mintplex-labs/piper-tts-web
+
+# pnpm
+pnpm add @mintplex-labs/piper-tts-web
+```
+
+> You can also use the `piper-tts-web` package if you prefer the community build.
+
+### 2. Host an ONNX model
+
+Download a Piper voice model (`.onnx` + `.onnx.json` config) from the [Piper voices repository](https://huggingface.co/rhasspy/piper-voices) and host both files on a CDN or in your `public/` folder.
+
+```
+public/
+  models/
+    en-us-amy-medium.onnx
+    en-us-amy-medium.onnx.json
+```
+
+### 3. Use Piper in your component
+
+```jsx
+<AvatarChatbot
+  enableTTS={true}
+  ttsProvider="piper"
+  piperModelUrl="/models/en-us-amy-medium.onnx"
+  piperModelConfigUrl="/models/en-us-amy-medium.onnx.json"
+/>
+```
+
+The model (~81 MB) is downloaded once and cached in the browser's Origin Private File System (OPFS). Subsequent page loads use the cached copy instantly.
+
+See the [Piper Guide](./PIPER_GUIDE.md) and [TTS Guide](./TTS_GUIDE.md#piper-tts-browser-onnx) for voice options and advanced configuration.
+
+---
+
 ## Troubleshooting
 
 ### Avatar not loading

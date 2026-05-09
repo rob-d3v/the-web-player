@@ -196,6 +196,30 @@ Microsoft's neural voices. 500,000 chars/month FREE.
 
 ---
 
+## Piper TTS (Browser ONNX)
+
+Run TTS entirely in the browser using ONNX inference — no API keys needed.
+
+```jsx
+<AvatarChatbot
+  ttsProvider="piper"
+  piperModelUrl="https://cdn.example.com/models/en-us-amy-medium.onnx"
+  piperModelConfigUrl="https://cdn.example.com/models/en-us-amy-medium.onnx.json"
+  piperPitch={1.0}
+  piperSpeed={1.0}
+/>
+```
+
+The model (~81MB) is downloaded once and cached in the browser's OPFS. Subsequent loads are instant.
+
+**Requirements:**
+- Install `@mintplex-labs/piper-tts-web` or `piper-tts-web` in your project
+- Host the ONNX model file on a CDN or static server
+
+See [PIPER_GUIDE.md](./PIPER_GUIDE.md) for full details.
+
+---
+
 ## Animation Timing
 
 Fine-tune how the avatar syncs with speech:

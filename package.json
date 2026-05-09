@@ -1,6 +1,6 @@
 {
   "name": "ania-avatar-react",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "React component library for ANIA Avatar with TTS, STT, and chatbot integration",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -31,6 +31,10 @@
     "url": "https://github.com/rob-d3v/ania-avatar-react/issues"
   },
   "homepage": "https://github.com/rob-d3v/ania-avatar-react#readme",
+  "optionalDependencies": {
+    "@mintplex-labs/piper-tts-web": ">=1.0.0",
+    "piper-tts-web": ">=1.0.0"
+  },
   "keywords": [
     "react",
     "avatar",
@@ -43,7 +47,12 @@
     "animated-avatar",
     "voice",
     "webhook",
-    "n8n"
+    "n8n",
+    "lip-sync",
+    "piper",
+    "onnx",
+    "ollama",
+    "action-frames"
   ],
   "author": "robd3v",
   "license": "MIT"
