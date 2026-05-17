@@ -2,7 +2,7 @@ import { jsx, jsxs } from "react/jsx-runtime";
 import { forwardRef, createElement, useRef, useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import * as ort from "onnxruntime-web";
-import { FetchProvider, PiperWebEngine, OnnxWebRuntime } from "piper-tts-web";
+import { FetchProvider, PiperWebEngine, OnnxWebWorkerRuntime, OnnxWebRuntime } from "piper-tts-web";
 /**
  * @license lucide-react v0.460.0 - ISC
  *
@@ -2362,6 +2362,148 @@ const useActionFrames = ({
     cancelAction
   };
 };
+ort.env.wasm.proxy = false;
+ort.env.wasm.numThreads = 1;
+let engine = null;
+let initPromise = null;
+let warmupPromise = null;
+let currentVoiceName = null;
+let useWorkerRuntime = true;
+let piperStatus = {
+  ready: false,
+  modelCached: false,
+  downloading: false,
+  progress: 0,
+  error: null,
+  warming: false
+};
+const setStatus = (patch) => {
+  piperStatus = { ...piperStatus, ...patch };
+};
+const buildVoiceProvider = (modelUrl, modelConfigUrl, options) => {
+  const fetchProvider = new FetchProvider();
+  return {
+    destroy: () => fetchProvider.destroy(),
+    list: async () => [],
+    fetch: async () => {
+      setStatus({ progress: 10 });
+      if (options.onProgress) options.onProgress(10);
+      const json = await fetchProvider.fetch(modelConfigUrl);
+      setStatus({ progress: 30 });
+      if (options.onProgress) options.onProgress(30);
+      const blobUrl = await fetchProvider.fetch(modelUrl);
+      setStatus({ progress: 90 });
+      if (options.onProgress) options.onProgress(90);
+      return [json, blobUrl];
+    }
+  };
+};
+const buildEngine = (voiceProvider) => {
+  if (useWorkerRuntime) {
+    try {
+      return new PiperWebEngine({
+        onnxRuntime: new OnnxWebWorkerRuntime({ numThreads: 1 }),
+        voiceProvider
+      });
+    } catch (err) {
+      console.warn("[PiperTTS] Worker runtime unavailable, falling back to main thread:", err);
+      useWorkerRuntime = false;
+    }
+  }
+  return new PiperWebEngine({
+    onnxRuntime: new OnnxWebRuntime({ numThreads: 1 }),
+    voiceProvider
+  });
+};
+const initPiper = async (modelUrl, modelConfigUrl, options = {}) => {
+  if (engine && piperStatus.ready) return engine;
+  if (initPromise) return initPromise;
+  setStatus({ downloading: true, progress: 0, error: null, warming: true });
+  initPromise = (async () => {
+    try {
+      const modelFileName = modelUrl.split("/").pop().replace(".onnx", "");
+      currentVoiceName = modelFileName;
+      const voiceProvider = buildVoiceProvider(modelUrl, modelConfigUrl, options);
+      engine = buildEngine(voiceProvider);
+      warmupPromise = engine.generate(" ", currentVoiceName, 0).then(() => {
+        setStatus({
+          ready: true,
+          modelCached: true,
+          downloading: false,
+          progress: 100,
+          warming: false
+        });
+        if (options.onProgress) options.onProgress(100);
+        if (options.onReady) options.onReady();
+      }).catch((err) => {
+        setStatus({ downloading: false, error: err.message, warming: false });
+        console.error("[PiperTTS] Warmup failed:", err);
+        throw err;
+      });
+      return engine;
+    } catch (err) {
+      engine = null;
+      initPromise = null;
+      warmupPromise = null;
+      setStatus({ downloading: false, error: err.message, warming: false });
+      console.error("[PiperTTS] Init failed:", err);
+      throw err;
+    }
+  })();
+  return initPromise;
+};
+const preloadPiper = (modelUrl, modelConfigUrl, options = {}) => {
+  return initPiper(modelUrl, modelConfigUrl, options);
+};
+const piperSynthesize = async (text, options = {}) => {
+  if (!engine) {
+    throw new Error("Piper TTS not initialized. Call initPiper() first.");
+  }
+  if (warmupPromise) {
+    try {
+      await warmupPromise;
+    } catch {
+    }
+  }
+  try {
+    const speakerId = options.speakerId ?? 0;
+    const response = await engine.generate(text, currentVoiceName, speakerId);
+    const blob = response.file;
+    const audioUrl = URL.createObjectURL(blob);
+    return { audioUrl, blob };
+  } catch (err) {
+    console.error("[PiperTTS] Synthesis failed:", err);
+    throw err;
+  }
+};
+const getPiperStatus = () => ({ ...piperStatus });
+const checkPiperStatus = () => ({ ...piperStatus });
+const disposePiper = () => {
+  if (engine == null ? void 0 : engine.destroy) {
+    engine.destroy();
+  }
+  engine = null;
+  initPromise = null;
+  warmupPromise = null;
+  currentVoiceName = null;
+  piperStatus = {
+    ready: false,
+    modelCached: false,
+    downloading: false,
+    progress: 0,
+    error: null,
+    warming: false
+  };
+};
+const piperTts = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  checkPiperStatus,
+  disposePiper,
+  getPiperStatus,
+  initPiper,
+  piperSynthesize,
+  preloadPiper
+}, Symbol.toStringTag, { value: "Module" }));
 const AvatarChatbot = ({
   avatarUrl,
   avatarPassword,
@@ -2449,6 +2591,21 @@ const AvatarChatbot = ({
   const sttTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
   const sttRestartTimeoutRef = useRef(null);
+  useEffect(() => {
+    if (!enableTTS || ttsProvider !== "piper" || !piperModelUrl) return;
+    if (typeof window === "undefined") return;
+    const run = () => {
+      preloadPiper(piperModelUrl, piperModelConfigUrl).catch((err) => {
+        console.warn("[AvatarChatbot] Piper preload failed (will retry on demand):", err);
+      });
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const id2 = window.requestIdleCallback(run, { timeout: 2e3 });
+      return () => window.cancelIdleCallback && window.cancelIdleCallback(id2);
+    }
+    const id = window.setTimeout(run, 0);
+    return () => window.clearTimeout(id);
+  }, [enableTTS, ttsProvider, piperModelUrl, piperModelConfigUrl]);
   const { isTalking, speak, cancel, audioRef: ttsAudioRef } = useTTSDetection({
     pauseThreshold: 350,
     idleTransitionDelay: postTalkDelay,
@@ -3302,101 +3459,6 @@ const useAniaAvatarRef = () => {
   };
   return { ref, setTalking, play, pause, triggerAction, cancelAction, getAvailableActions, setLipSyncEnabled, getLipSyncState };
 };
-ort.env.wasm.proxy = false;
-ort.env.wasm.numThreads = 1;
-let engine = null;
-let initPromise = null;
-let currentVoiceName = null;
-let piperStatus = {
-  ready: false,
-  modelCached: false,
-  downloading: false,
-  progress: 0,
-  error: null
-};
-const initPiper = async (modelUrl, modelConfigUrl, options = {}) => {
-  if (engine && piperStatus.ready) return engine;
-  if (initPromise) return initPromise;
-  piperStatus = { ...piperStatus, downloading: true, progress: 0, error: null };
-  initPromise = (async () => {
-    try {
-      const fetchProvider = new FetchProvider();
-      const modelFileName = modelUrl.split("/").pop().replace(".onnx", "");
-      currentVoiceName = modelFileName;
-      const voiceProvider = {
-        destroy: () => fetchProvider.destroy(),
-        list: async () => [],
-        fetch: async () => {
-          piperStatus = { ...piperStatus, progress: 10 };
-          if (options.onProgress) options.onProgress(10);
-          const json = await fetchProvider.fetch(modelConfigUrl);
-          piperStatus = { ...piperStatus, progress: 30 };
-          if (options.onProgress) options.onProgress(30);
-          const blobUrl = await fetchProvider.fetch(modelUrl);
-          piperStatus = { ...piperStatus, progress: 90 };
-          if (options.onProgress) options.onProgress(90);
-          return [json, blobUrl];
-        }
-      };
-      engine = new PiperWebEngine({
-        onnxRuntime: new OnnxWebRuntime({ numThreads: 1 }),
-        voiceProvider
-      });
-      await engine.generate(" ", currentVoiceName, 0);
-      piperStatus = {
-        ready: true,
-        modelCached: true,
-        downloading: false,
-        progress: 100,
-        error: null
-      };
-      if (options.onProgress) options.onProgress(100);
-      if (options.onReady) options.onReady();
-      return engine;
-    } catch (err) {
-      engine = null;
-      initPromise = null;
-      piperStatus = { ...piperStatus, downloading: false, error: err.message };
-      console.error("[PiperTTS] Init failed:", err);
-      throw err;
-    }
-  })();
-  return initPromise;
-};
-const piperSynthesize = async (text, options = {}) => {
-  if (!engine || !piperStatus.ready) {
-    throw new Error("Piper TTS not initialized. Call initPiper() first.");
-  }
-  try {
-    const speakerId = options.speakerId ?? 0;
-    const response = await engine.generate(text, currentVoiceName, speakerId);
-    const blob = response.file;
-    const audioUrl = URL.createObjectURL(blob);
-    return { audioUrl, blob };
-  } catch (err) {
-    console.error("[PiperTTS] Synthesis failed:", err);
-    throw err;
-  }
-};
-const getPiperStatus = () => ({ ...piperStatus });
-const checkPiperStatus = () => ({ ...piperStatus });
-const disposePiper = () => {
-  if (engine == null ? void 0 : engine.destroy) {
-    engine.destroy();
-  }
-  engine = null;
-  initPromise = null;
-  currentVoiceName = null;
-  piperStatus = { ready: false, modelCached: false, downloading: false, progress: 0, error: null };
-};
-const piperTts = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  checkPiperStatus,
-  disposePiper,
-  getPiperStatus,
-  initPiper,
-  piperSynthesize
-}, Symbol.toStringTag, { value: "Module" }));
 export {
   AniaAvatar,
   AvatarChatbot,
@@ -3414,6 +3476,7 @@ export {
   parseHotkey,
   piperSynthesize,
   playActionAudio,
+  preloadPiper,
   setCachedAvatar,
   useActionFrames,
   useAniaAvatarRef,
