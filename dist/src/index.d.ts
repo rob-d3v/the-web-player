@@ -48,7 +48,7 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   ttsRate?: number;
   ttsPitch?: number;
   ttsLang?: string;
-  ttsProvider?: 'browser' | 'tiktok' | 'elevenlabs' | 'google' | 'azure';
+  ttsProvider?: 'browser' | 'tiktok' | 'elevenlabs' | 'google' | 'azure' | 'piper';
   ttsApiKey?: string;
   ttsApiUrl?: string;
   ttsVoiceId?: string;
