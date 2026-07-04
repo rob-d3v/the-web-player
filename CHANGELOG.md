@@ -2,6 +2,22 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.9.1]
+
+### Fixed
+- **Mouth froze after returning to the tab mid-speech.** `AniaAvatar`'s
+  visibilitychange handler re-applied its internal (always-false in
+  chatbot/host-driven mode) talk state to the AnimationController on every tab
+  return, freezing the mouth while TTS audio kept playing. Talk state is now
+  only re-asserted by whichever side owns it: `detectAudio` mode keeps the old
+  behavior, and `AvatarChatbot` resyncs the CURRENT talk state on tab return.
+- FFT lip sync (`useLipSync`) hardened: persistent AudioContext with
+  auto-resume (visibilitychange, next user gesture, and a throttled kick from
+  the read path), per-element source cache so a reconnect can never wire the
+  analyser to another element's source, single analyser reused across chunks,
+  and the racy render-effect reconnect removed (`onChunkAudio` is the single
+  connect path).
+
 ## [1.9.0]
 
 ### Changed — TTS latency (Piper + all cloud providers)

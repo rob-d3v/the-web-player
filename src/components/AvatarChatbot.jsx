@@ -330,7 +330,7 @@ export const AvatarChatbot = ({
   // per element, so we MUST reconnect per chunk for the mouth to track it.
   const lipSyncConnectRef = useRef(null);
 
-  const { isTalking, speak, cancel, audioRef: ttsAudioRef } = useTTSDetection({
+  const { isTalking, speak, cancel } = useTTSDetection({
     pauseThreshold: 350,
     idleTransitionDelay: postTalkDelay,
     talkStartDelay: talkStartDelay,
@@ -372,11 +372,12 @@ export const AvatarChatbot = ({
     lipSyncConnectRef.current = lipSync.connectAudioElement;
   }, [lipSync.connectAudioElement]);
 
-  // Connect TTS audio to lip sync when it plays (first chunk / non-chunked).
-  useEffect(() => {
-    if (!lipSyncEnabled || !ttsAudioRef?.current) return;
-    lipSync.connectAudioElement(ttsAudioRef.current);
-  }, [lipSyncEnabled, ttsAudioRef?.current]);
+  // NOTE: no render-effect connect here. Every played chunk (including the
+  // first, and the single-chunk/non-chunked case — the queue runner handles
+  // both) announces its <audio> via onChunkAudio above, which is the ONLY
+  // connect path. A render-time effect keyed on a ref was racy: it could
+  // re-connect a STALE element mid-queue and point the analyser at a dead
+  // source, freezing the mouth while audio kept playing.
 
   // Action frames state
   const animationController = avatarRef?.playerRef?.current?.animationController || null;
@@ -893,6 +894,27 @@ export const AvatarChatbot = ({
     }
     controller.setTalkingState(isTalking);
   }, [isTalking, avatarRef]);
+
+  // The chatbot owns the talk state (AniaAvatar's internal detection is off in
+  // this mode), so when the user returns to the tab we re-assert the CURRENT
+  // state onto the controller. While the tab is hidden the player's rAF loop
+  // halts and the controller can come back stale/desynced — without this, a
+  // reply that started while the tab was hidden plays audio with a frozen
+  // mouth. Registered once; reads the live value from a ref.
+  const isTalkingLiveRef = useRef(isTalking);
+  useEffect(() => { isTalkingLiveRef.current = isTalking; }, [isTalking]);
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const resync = () => {
+      var _a, _b;
+      if (document.hidden) return;
+      const controller = (_b = (_a = avatarRef == null ? void 0 : avatarRef.playerRef) == null ? void 0 : _a.current) == null ? void 0 : _b.animationController;
+      if (!controller) return;
+      try { controller.setTalkingState(isTalkingLiveRef.current); } catch (e) {}
+    };
+    document.addEventListener('visibilitychange', resync);
+    return () => document.removeEventListener('visibilitychange', resync);
+  }, [avatarRef]);
 
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files || []);

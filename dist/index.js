@@ -12557,7 +12557,7 @@ const AniaAvatar = ({
             console.error("[AniaAvatar] Error reactivating:", err);
           }
         }
-        if (playerRef.current.animationController) {
+        if (detectAudio && playerRef.current.animationController) {
           playerRef.current.animationController.setTalkingState(isTalking);
         }
       }
@@ -12584,7 +12584,7 @@ const AniaAvatar = ({
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       clearInterval(keepaliveInterval);
     };
-  }, [isTalking, isLoaded]);
+  }, [isTalking, isLoaded, detectAudio]);
   useEffect(() => {
     const loadAvatar = async () => {
       var _c;
@@ -14999,62 +14999,103 @@ const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } = {}) =
   const dataArrayRef = useRef(null);
   const prevSpectrumRef = useRef(null);
   const connectedElementRef = useRef(null);
+  const elementSourcesRef = useRef(typeof WeakMap !== "undefined" ? /* @__PURE__ */ new WeakMap() : null);
+  const resumeListenersRef = useRef(null);
+  const lastResumeKickRef = useRef(0);
   const getOrCreateContext = useCallback(() => {
     if (!audioContextRef.current || audioContextRef.current.state === "closed") {
       audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
     }
     return audioContextRef.current;
   }, []);
+  const kickResume = useCallback(() => {
+    const ctx = audioContextRef.current;
+    if (!ctx || ctx.state !== "suspended") return;
+    const now = Date.now();
+    if (now - lastResumeKickRef.current < 250) return;
+    lastResumeKickRef.current = now;
+    try {
+      ctx.resume().catch(() => {
+      });
+    } catch (e) {
+    }
+  }, []);
+  const installResumeListeners = useCallback(() => {
+    if (resumeListenersRef.current || typeof document === "undefined") return;
+    const onVisibility = () => {
+      if (!document.hidden) kickResume();
+    };
+    const onGesture = () => {
+      kickResume();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pointerdown", onGesture, { passive: true });
+    window.addEventListener("keydown", onGesture);
+    resumeListenersRef.current = () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pointerdown", onGesture);
+      window.removeEventListener("keydown", onGesture);
+    };
+  }, [kickResume]);
   const connectAudioElement = useCallback((audioElement) => {
     if (!enabled || !audioElement) return;
-    if (connectedElementRef.current === audioElement && analyserRef.current) return;
+    if (connectedElementRef.current === audioElement && analyserRef.current) {
+      kickResume();
+      return;
+    }
     try {
       const ctx = getOrCreateContext();
-      if (ctx.state === "suspended") ctx.resume();
+      installResumeListeners();
+      if (ctx.state === "suspended") kickResume();
+      if (!analyserRef.current || analyserRef.current.context !== ctx) {
+        if (analyserRef.current) {
+          try {
+            analyserRef.current.disconnect();
+          } catch (e) {
+          }
+        }
+        const analyser2 = ctx.createAnalyser();
+        analyser2.fftSize = fftSize;
+        analyser2.smoothingTimeConstant = smoothing;
+        analyser2.connect(ctx.destination);
+        analyserRef.current = analyser2;
+        dataArrayRef.current = new Uint8Array(analyser2.frequencyBinCount);
+        prevSpectrumRef.current = new Float32Array(analyser2.frequencyBinCount);
+      }
+      const analyser = analyserRef.current;
       if (sourceRef.current) {
         try {
           sourceRef.current.disconnect();
         } catch (e) {
         }
       }
-      if (analyserRef.current) {
-        try {
-          analyserRef.current.disconnect();
-        } catch (e) {
-        }
+      let source = elementSourcesRef.current ? elementSourcesRef.current.get(audioElement) : null;
+      if (source && source.context !== ctx) {
+        console.warn("[useLipSync] Audio element belongs to a closed AudioContext; skipping analyser hookup");
+        return;
       }
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = fftSize;
-      analyser.smoothingTimeConstant = smoothing;
-      analyserRef.current = analyser;
-      dataArrayRef.current = new Uint8Array(analyser.frequencyBinCount);
-      prevSpectrumRef.current = new Float32Array(analyser.frequencyBinCount);
-      let source;
-      try {
+      if (!source) {
         source = ctx.createMediaElementSource(audioElement);
-      } catch (e) {
-        if (sourceRef.current) {
-          source = sourceRef.current;
-        } else {
-          console.warn("[useLipSync] Cannot create source for audio element:", e);
-          return;
-        }
+        if (elementSourcesRef.current) elementSourcesRef.current.set(audioElement, source);
       }
-      sourceRef.current = source;
       source.connect(analyser);
-      analyser.connect(ctx.destination);
+      sourceRef.current = source;
       connectedElementRef.current = audioElement;
     } catch (err) {
       console.warn("[useLipSync] Failed to connect audio:", err);
     }
-  }, [enabled, fftSize, smoothing, getOrCreateContext]);
+  }, [enabled, fftSize, smoothing, getOrCreateContext, installResumeListeners, kickResume]);
   const getSpectralOpenness = useCallback(() => {
     if (!analyserRef.current || !dataArrayRef.current) return 0;
+    const ctx = audioContextRef.current;
+    if (!ctx) return 0;
+    if (ctx.state !== "running") {
+      kickResume();
+      return 0;
+    }
     const analyser = analyserRef.current;
     const data = dataArrayRef.current;
     analyser.getByteFrequencyData(data);
-    const ctx = audioContextRef.current;
-    if (!ctx) return 0;
     const sampleRate = ctx.sampleRate;
     const binSize = sampleRate / analyser.fftSize;
     const lowBin = Math.floor(85 / binSize);
@@ -15067,9 +15108,14 @@ const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } = {}) =
     }
     if (count === 0) return 0;
     return Math.min(1, sum / count / 255);
-  }, []);
+  }, [kickResume]);
   const getSpectralFlux = useCallback(() => {
     if (!analyserRef.current || !dataArrayRef.current || !prevSpectrumRef.current) return 0;
+    const ctx = audioContextRef.current;
+    if (ctx && ctx.state !== "running") {
+      kickResume();
+      return 0;
+    }
     const analyser = analyserRef.current;
     const data = dataArrayRef.current;
     const prev = prevSpectrumRef.current;
@@ -15082,9 +15128,14 @@ const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } = {}) =
       prev[i] = data[i] / 255;
     }
     return Math.min(1, flux / (len * 0.1));
-  }, []);
+  }, [kickResume]);
   const getAmplitude = useCallback(() => {
     if (!analyserRef.current) return 0;
+    const ctx = audioContextRef.current;
+    if (ctx && ctx.state !== "running") {
+      kickResume();
+      return 0;
+    }
     const analyser = analyserRef.current;
     const timeData = new Uint8Array(analyser.fftSize);
     analyser.getByteTimeDomainData(timeData);
@@ -15094,7 +15145,7 @@ const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } = {}) =
       if (amp > maxAmp) maxAmp = amp;
     }
     return maxAmp;
-  }, []);
+  }, [kickResume]);
   const disconnect = useCallback(() => {
     if (sourceRef.current) {
       try {
@@ -15117,6 +15168,10 @@ const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } = {}) =
   useEffect(() => {
     return () => {
       disconnect();
+      if (resumeListenersRef.current) {
+        resumeListenersRef.current();
+        resumeListenersRef.current = null;
+      }
       if (audioContextRef.current && audioContextRef.current.state !== "closed") {
         audioContextRef.current.close().catch(() => {
         });
@@ -16659,7 +16714,7 @@ const AvatarChatbot = ({
     return () => window.clearTimeout(id2);
   }, [piperPreload, ensurePiperPreload]);
   const lipSyncConnectRef = useRef(null);
-  const { isTalking, speak, cancel, audioRef: ttsAudioRef } = useTTSDetection({
+  const { isTalking, speak, cancel } = useTTSDetection({
     pauseThreshold: 350,
     idleTransitionDelay: postTalkDelay,
     talkStartDelay,
@@ -16698,10 +16753,6 @@ const AvatarChatbot = ({
   useEffect(() => {
     lipSyncConnectRef.current = lipSync.connectAudioElement;
   }, [lipSync.connectAudioElement]);
-  useEffect(() => {
-    if (!lipSyncEnabled || !(ttsAudioRef == null ? void 0 : ttsAudioRef.current)) return;
-    lipSync.connectAudioElement(ttsAudioRef.current);
-  }, [lipSyncEnabled, ttsAudioRef == null ? void 0 : ttsAudioRef.current]);
   const animationController = ((_b = (_a = avatarRef == null ? void 0 : avatarRef.playerRef) == null ? void 0 : _a.current) == null ? void 0 : _b.animationController) || null;
   const { activeAction, availableActions, triggerAction: triggerActionFrame, cancelAction: cancelActionFrame } = useActionFrames({
     actions: actions || EMPTY_ACTIONS,
@@ -17138,6 +17189,25 @@ const AvatarChatbot = ({
     }
     controller.setTalkingState(isTalking);
   }, [isTalking, avatarRef]);
+  const isTalkingLiveRef = useRef(isTalking);
+  useEffect(() => {
+    isTalkingLiveRef.current = isTalking;
+  }, [isTalking]);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const resync = () => {
+      var _a2, _b2;
+      if (document.hidden) return;
+      const controller = (_b2 = (_a2 = avatarRef == null ? void 0 : avatarRef.playerRef) == null ? void 0 : _a2.current) == null ? void 0 : _b2.animationController;
+      if (!controller) return;
+      try {
+        controller.setTalkingState(isTalkingLiveRef.current);
+      } catch (e) {
+      }
+    };
+    document.addEventListener("visibilitychange", resync);
+    return () => document.removeEventListener("visibilitychange", resync);
+  }, [avatarRef]);
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files || []);
     const newAttachments = [];

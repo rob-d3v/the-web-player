@@ -301,7 +301,11 @@ export const AniaAvatar = ({
           }
         }
 
-        if (playerRef.current.animationController) {
+        // Re-assert the talk state ONLY when this component's own audio
+        // detection owns it (detectAudio mode). In chatbot/host-driven mode
+        // the local `isTalking` is always false — forcing it here froze the
+        // mouth whenever the user returned to the tab mid-speech.
+        if (detectAudio && playerRef.current.animationController) {
           playerRef.current.animationController.setTalkingState(isTalking);
         }
       }
@@ -331,7 +335,7 @@ export const AniaAvatar = ({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearInterval(keepaliveInterval);
     };
-  }, [isTalking, isLoaded]);
+  }, [isTalking, isLoaded, detectAudio]);
 
   useEffect(() => {
     const loadAvatar = async () => {
