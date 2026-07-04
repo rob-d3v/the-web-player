@@ -83,10 +83,6 @@ export const useTTSDetection = ({
     const now = Date.now();
     const timeSinceIdle = lastIdleActivationRef.current ? now - lastIdleActivationRef.current : Infinity;
 
-    if (timeSinceIdle < minIdleDuration) {
-      return;
-    }
-
     const doActivate = () => {
       lastTalkActivationRef.current = Date.now();
       setIsTalking((prev) => {
@@ -98,8 +94,14 @@ export const useTTSDetection = ({
       talkStartTimeoutRef.current = null;
     };
 
-    if (talkStartDelay > 0) {
-      talkStartTimeoutRef.current = setTimeout(doActivate, talkStartDelay);
+    // If we just went idle, don't DROP the activation (audio is actually
+    // playing — the caller only signals this once per chunk); defer it for the
+    // remaining debounce window instead.
+    const idleHoldRemaining = Math.max(0, minIdleDuration - timeSinceIdle);
+    const delay = Math.max(talkStartDelay, idleHoldRemaining);
+
+    if (delay > 0) {
+      talkStartTimeoutRef.current = setTimeout(doActivate, delay);
     } else {
       doActivate();
     }
@@ -465,8 +467,14 @@ export const useTTSDetection = ({
       ttsProvider !== "browser" &&
       (ttsConfig.ttsApiKey || keylessProviders.includes(ttsProvider));
 
-    // Bring the avatar to "talking" up front and keep it there for the queue.
-    activateTalk();
+    // NOTE: talk state is NOT activated here. Synthesis of the first chunk can
+    // take seconds (Piper cold path), and flipping to talk frames before any
+    // sound plays reads as the avatar mouthing silence. The talk state flips
+    // exactly when audio actually starts: `audio.onplay` (cloud/piper chunks)
+    // and `utterance.onstart` (browser TTS) both call resetPauseTimeout() ->
+    // activateTalk(). This mirrors the desktop AniaAPP, whose frame switch is
+    // driven by real audio playback, not by the intent to speak. It also means
+    // a totally failed queue never strands the avatar in the talking state.
 
     if (useCloud) {
       let handled = false;
@@ -485,7 +493,7 @@ export const useTTSDetection = ({
     runBrowserQueue(chunks, myGen, options);
   }, [
     ttsProvider, ttsConfig, ttsChunking, minChunkChars, maxChunkChars,
-    firstChunkMaxChars, splitOnSemicolon, hardStop, onTalkEnd, activateTalk,
+    firstChunkMaxChars, splitOnSemicolon, hardStop, onTalkEnd,
     runAudioQueue, runBrowserQueue
   ]);
 

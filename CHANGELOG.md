@@ -2,6 +2,17 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.9.2]
+
+### Fixed
+- **Talk frames started before any audio.** `speak()` activated the talking
+  state before synthesizing the first chunk, so on Piper's cold path the mouth
+  animated through seconds of silence. The talk state now flips exactly when
+  audio starts playing (`audio.onplay` / `utterance.onstart`), mirroring the
+  desktop AniaAPP's amplitude-driven frame switching. A failed queue no longer
+  strands the avatar in the talking state, and a debounced activation is
+  deferred instead of dropped.
+
 ## [1.9.1]
 
 ### Fixed

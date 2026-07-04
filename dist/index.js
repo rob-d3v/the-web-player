@@ -13531,9 +13531,6 @@ const useTTSDetection = ({
     if (talkStartTimeoutRef.current) return;
     const now = Date.now();
     const timeSinceIdle = lastIdleActivationRef.current ? now - lastIdleActivationRef.current : Infinity;
-    if (timeSinceIdle < minIdleDuration) {
-      return;
-    }
     const doActivate = () => {
       lastTalkActivationRef.current = Date.now();
       setIsTalking((prev) => {
@@ -13544,8 +13541,10 @@ const useTTSDetection = ({
       });
       talkStartTimeoutRef.current = null;
     };
-    if (talkStartDelay > 0) {
-      talkStartTimeoutRef.current = setTimeout(doActivate, talkStartDelay);
+    const idleHoldRemaining = Math.max(0, minIdleDuration - timeSinceIdle);
+    const delay = Math.max(talkStartDelay, idleHoldRemaining);
+    if (delay > 0) {
+      talkStartTimeoutRef.current = setTimeout(doActivate, delay);
     } else {
       doActivate();
     }
@@ -13846,7 +13845,6 @@ const useTTSDetection = ({
     if (chunks.length === 0) return;
     const keylessProviders = ["tiktok", "piper"];
     const useCloud = ttsProvider !== "browser" && (ttsConfig.ttsApiKey || keylessProviders.includes(ttsProvider));
-    activateTalk();
     if (useCloud) {
       let handled = false;
       try {
@@ -13869,7 +13867,6 @@ const useTTSDetection = ({
     splitOnSemicolon,
     hardStop,
     onTalkEnd,
-    activateTalk,
     runAudioQueue,
     runBrowserQueue
   ]);
