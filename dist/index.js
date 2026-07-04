@@ -1,5 +1,5 @@
 import { jsx, jsxs } from "react/jsx-runtime";
-import { forwardRef, createElement, useMemo, useRef, useState, useEffect, useCallback } from "react";
+import { forwardRef, createElement, useMemo, useRef, useState, useEffect, useCallback, useReducer } from "react";
 import { createPortal } from "react-dom";
 /**
  * @license lucide-react v0.460.0 - ISC
@@ -3232,6 +3232,12 @@ const en = {
   "chat.stt.micAccessError": "Unable to access microphone. Check permissions.",
   "chat.speed.idle": "Idle:",
   "chat.speed.talk": "Talk:",
+  "chat.flow.back": "Back",
+  "chat.flow.escalate": "Talk to a real person",
+  "chat.flow.submit": "Submit",
+  "chat.flow.skip": "Skip",
+  "chat.flow.inputInvalid": "Please check this field and try again.",
+  "chat.error.generic": "I ran into a little hiccup here — could you try again?",
   "avatar.loading": "Loading avatar...",
   "avatar.title.maximize": "Maximize",
   "avatar.title.minimize": "Minimize",
@@ -8826,6 +8832,12 @@ const ptBR = {
   "chat.stt.micAccessError": "Não foi possível acessar o microfone. Verifique as permissões.",
   "chat.speed.idle": "Parado:",
   "chat.speed.talk": "Falando:",
+  "chat.flow.back": "Voltar",
+  "chat.flow.escalate": "Falar com um atendente",
+  "chat.flow.submit": "Enviar",
+  "chat.flow.skip": "Pular",
+  "chat.flow.inputInvalid": "Verifique este campo e tente novamente.",
+  "chat.error.generic": "Tive um probleminha aqui, pode tentar de novo?",
   "avatar.loading": "Carregando avatar...",
   "avatar.title.maximize": "Maximizar",
   "avatar.title.minimize": "Minimizar",
@@ -11948,7 +11960,7 @@ function asList(value) {
   }
   return null;
 }
-function interpolate(value, vars) {
+function interpolate$1(value, vars) {
   if (!vars || typeof value !== "string") return value;
   return value.replace(
     /\{\{\s*(\w+)\s*\}\}/g,
@@ -11957,7 +11969,7 @@ function interpolate(value, vars) {
 }
 function getString(key, locale = DEFAULT_LOCALE, opts = {}) {
   const { vars, override } = opts;
-  if (override && override[key] != null) return interpolate(override[key], vars);
+  if (override && override[key] != null) return interpolate$1(override[key], vars);
   const table = resolveTable(locale);
   let value = table[key];
   if (value == null) {
@@ -11965,7 +11977,7 @@ function getString(key, locale = DEFAULT_LOCALE, opts = {}) {
     value = fb[key];
   }
   if (value == null) return key;
-  return interpolate(value, vars);
+  return interpolate$1(value, vars);
 }
 function getStringList(key, locale = DEFAULT_LOCALE, opts = {}) {
   const { override } = opts;
@@ -12936,19 +12948,24 @@ const AniaAvatar = ({
   const currentTheme = THEMES[theme] || THEMES.dark;
   const isMobileMinimized = isMobile && isMinimized;
   const getContainerStyle = () => {
+    const isMobileSheet = isMobile && !isMinimized && !!children;
     const baseStyle = {
       position: "fixed",
       transition: "all 0.3s ease",
+      // The widget must NOT inherit the host page's font (a serif host page
+      // makes the chat look broken). Own stack, own base color.
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
       ...!(dragPosition && isMinimized) ? positionStyles[position] : {},
+      ...isMobileSheet ? { left: "8px", right: "8px", bottom: "8px", top: "auto" } : {},
       ...isMobileMinimized ? {
         borderRadius: "9999px",
         overflow: "hidden",
         boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1)"
       } : {},
-      width: isMinimized ? `${currentWidth}px` : `min(${currentWidth}px, calc(100vw - 24px))`,
+      width: isMobileSheet ? "auto" : isMinimized ? `${currentWidth}px` : `min(${currentWidth}px, calc(100vw - 24px))`,
       height: children ? "auto" : `${currentHeight}px`,
       maxWidth: isMinimized ? void 0 : "calc(100vw - 24px)",
-      maxHeight: isMobileMinimized ? "none" : "calc(100vh - 24px)",
+      maxHeight: isMobileMinimized ? "none" : isMobileSheet ? "calc(100vh - 16px)" : "calc(100vh - 24px)",
       pointerEvents: "auto",
       zIndex: alwaysOnTop ? 2147483647 : 9999,
       display: "flex",
@@ -13081,7 +13098,9 @@ const AniaAvatar = ({
                 ref: containerRef,
                 style: {
                   width: isMobileMinimized ? `${currentWidth}px` : "100%",
-                  height: `${currentHeight}px`,
+                  // On a phone with the chat open, cap the avatar stage so the
+                  // conversation (not the canvas) owns the screen.
+                  height: isMobile && !isMinimized && children ? `min(${currentHeight}px, 34vh)` : `${currentHeight}px`,
                   maxWidth: "100%",
                   flexShrink: 0,
                   display: "flex",
@@ -13124,6 +13143,7 @@ const AniaAvatar = ({
   }
   return avatarNode;
 };
+const escapeXml = (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 const professionalTTSRequest = async (text, provider, config) => {
   try {
     if (provider === "tiktok") {
@@ -13226,10 +13246,10 @@ const professionalTTSRequest = async (text, provider, config) => {
       const region = config.ttsRegion || "brazilsouth";
       const apiUrl = config.ttsApiUrl || `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;
       const voiceName = config.ttsVoiceId || "pt-BR-AntonioNeural";
-      const ssml = `<speak version='1.0' xml:lang='${config.ttsLang || "pt-BR"}'>
-        <voice name='${voiceName}'>
+      const ssml = `<speak version='1.0' xml:lang='${escapeXml(config.ttsLang || "pt-BR")}'>
+        <voice name='${escapeXml(voiceName)}'>
           <prosody rate='${config.ttsRate || 1}' pitch='${(config.ttsPitch - 1) * 50}%'>
-            ${text}
+            ${escapeXml(text)}
           </prosody>
         </voice>
       </speak>`;
@@ -13253,6 +13273,214 @@ const professionalTTSRequest = async (text, provider, config) => {
     throw error;
   }
 };
+const SENTENCE_ENDERS = /* @__PURE__ */ new Set([".", "!", "?", "…"]);
+const ABBREVIATIONS = /* @__PURE__ */ new Set([
+  "sr",
+  "sra",
+  "srta",
+  "dr",
+  "dra",
+  "prof",
+  "profa",
+  "exmo",
+  "exma",
+  "sto",
+  "sta",
+  "av",
+  "r",
+  "pç",
+  "ed",
+  "ap",
+  "apto",
+  "bl",
+  "cep",
+  "tel",
+  "cel",
+  "ramal",
+  "cnpj",
+  "cpf",
+  "rg",
+  "ltda",
+  "cia",
+  "me",
+  "ne",
+  "no",
+  "nro",
+  "pag",
+  "pags",
+  "fl",
+  "fls",
+  "art",
+  "inc",
+  "par",
+  "etc",
+  "ex",
+  "p",
+  "pp",
+  "cap",
+  "vol",
+  "ed",
+  "séc",
+  "sec",
+  "min",
+  "seg",
+  "jan",
+  "fev",
+  "mar",
+  "abr",
+  "mai",
+  "jun",
+  "jul",
+  "ago",
+  "set",
+  "out",
+  "nov",
+  "dez",
+  "mr",
+  "mrs",
+  "ms",
+  "jr",
+  "st",
+  "vs",
+  "eg",
+  "ie",
+  "inc",
+  "corp",
+  "co",
+  "al"
+]);
+const isDigit = (ch) => ch >= "0" && ch <= "9";
+const isUpper = (ch) => ch >= "A" && ch <= "Z" || ch && ch.toLowerCase() !== ch.toUpperCase() && ch === ch.toUpperCase();
+const isLetter = (ch) => !!ch && ch.toLowerCase() !== ch.toUpperCase();
+const isSpace = (ch) => ch === " " || ch === "	" || ch === " ";
+const wordBeforeDot = (text, dotIndex) => {
+  let j = dotIndex - 1;
+  let word = "";
+  while (j >= 0 && (isLetter(text[j]) || isDigit(text[j]) || text[j] === "$")) {
+    word = text[j] + word;
+    j--;
+  }
+  return word;
+};
+const isAbbreviationOrNumberDot = (text, i) => {
+  const prev = text[i - 1];
+  const next = text[i + 1];
+  if (isDigit(prev) && isDigit(next)) return true;
+  if (next && !isSpace(next) && (isLetter(next) || isDigit(next))) return true;
+  const word = wordBeforeDot(text, i);
+  if (!word) return false;
+  if (word.length === 1 && isUpper(word)) return true;
+  const lower = word.toLowerCase();
+  if (ABBREVIATIONS.has(lower)) return true;
+  return false;
+};
+const isEllipsisRun = (text, i) => text[i] === "." && text[i + 1] === "." && text[i + 2] === ".";
+const chunkText = (text, opts = {}) => {
+  const {
+    minChunkChars = 12,
+    maxChunkChars = 0,
+    splitOnSemicolon = false,
+    firstChunkMaxChars = 0
+  } = opts;
+  if (text == null) return [];
+  const src = String(text);
+  if (!src.trim()) return [];
+  const rawChunks = [];
+  let start = 0;
+  let i = 0;
+  const n = src.length;
+  const push = (end) => {
+    const piece = src.slice(start, end);
+    if (piece.trim()) rawChunks.push(piece.trim());
+    start = end;
+  };
+  while (i < n) {
+    const ch = src[i];
+    if (ch === "\n" || ch === "\r") {
+      push(i);
+      while (i < n && (src[i] === "\n" || src[i] === "\r")) i++;
+      start = i;
+      continue;
+    }
+    if (ch === "…") {
+      push(i + 1);
+      i++;
+      continue;
+    }
+    if (isEllipsisRun(src, i)) {
+      let j = i;
+      while (j < n && src[j] === ".") j++;
+      push(j);
+      i = j;
+      continue;
+    }
+    if (SENTENCE_ENDERS.has(ch)) {
+      if (ch === "." && isAbbreviationOrNumberDot(src, i)) {
+        i++;
+        continue;
+      }
+      let end = i + 1;
+      while (end < n && ("!?.…".includes(src[end]) || `")’”'`.includes(src[end]))) {
+        end++;
+      }
+      push(end);
+      i = end;
+      continue;
+    }
+    if (splitOnSemicolon && (ch === ";" || ch === ":")) {
+      push(i + 1);
+      i++;
+      continue;
+    }
+    i++;
+  }
+  if (start < n) push(n);
+  const merged = [];
+  for (let k = 0; k < rawChunks.length; k++) {
+    const cur = rawChunks[k];
+    if (cur.length < minChunkChars && k < rawChunks.length - 1) {
+      rawChunks[k + 1] = `${cur} ${rawChunks[k + 1]}`;
+      continue;
+    }
+    if (cur.length < minChunkChars && merged.length > 0) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]} ${cur}`;
+      continue;
+    }
+    merged.push(cur);
+  }
+  if (firstChunkMaxChars > 0 && merged.length > 0 && merged[0].length > firstChunkMaxChars) {
+    const first = merged[0];
+    let cut = first.lastIndexOf(",", firstChunkMaxChars);
+    if (cut < Math.min(minChunkChars, firstChunkMaxChars)) {
+      cut = first.lastIndexOf(" ", firstChunkMaxChars);
+    }
+    if (cut <= 0) cut = firstChunkMaxChars;
+    const head = first.slice(0, first[cut] === "," ? cut + 1 : cut).trim();
+    const tail = first.slice(first[cut] === "," ? cut + 1 : cut).trim();
+    if (head && tail) {
+      merged.splice(0, 1, head, tail);
+    }
+  }
+  if (maxChunkChars > 0) {
+    const wrapped = [];
+    for (const chunk of merged) {
+      if (chunk.length <= maxChunkChars) {
+        wrapped.push(chunk);
+        continue;
+      }
+      let rest = chunk;
+      while (rest.length > maxChunkChars) {
+        let cut = rest.lastIndexOf(" ", maxChunkChars);
+        if (cut <= 0) cut = maxChunkChars;
+        wrapped.push(rest.slice(0, cut).trim());
+        rest = rest.slice(cut).trim();
+      }
+      if (rest) wrapped.push(rest);
+    }
+    return wrapped.filter(Boolean);
+  }
+  return merged.filter(Boolean);
+};
 const useTTSDetection = ({
   pauseThreshold = 150,
   idleTransitionDelay = 400,
@@ -13262,7 +13490,22 @@ const useTTSDetection = ({
   onTalkStart,
   onTalkEnd,
   ttsProvider = "browser",
-  ttsConfig = {}
+  ttsConfig = {},
+  // ---- streaming/chunked config ----
+  ttsChunking = true,
+  // Short natural beat between sentences. The synthesized audio already ends
+  // with the sentence's own trailing silence, so anything near 1s reads as
+  // "the bot froze" — 250ms is a breath, not a stall.
+  chunkGapMs = 250,
+  maxChunkChars = 0,
+  minChunkChars = 12,
+  // Cap the FIRST chunk so the first synthesis is tiny and speech starts
+  // almost immediately; the remainder streams behind it (0 = off).
+  firstChunkMaxChars = 100,
+  splitOnSemicolon = false,
+  // Fires with the <audio> element (cloud/piper) of each chunk as it begins to
+  // play, so the host can (re)connect lip-sync to the live element.
+  onChunkAudio
 } = {}) => {
   const [isTalking, setIsTalking] = useState(false);
   const pauseTimeoutRef = useRef(null);
@@ -13274,6 +13517,12 @@ const useTTSDetection = ({
   const audioRef = useRef(null);
   const lastTalkActivationRef = useRef(null);
   const lastIdleActivationRef = useRef(null);
+  const genRef = useRef(0);
+  const gapTimeoutRef = useRef(null);
+  const pendingUrlsRef = useRef(/* @__PURE__ */ new Set());
+  const synthAbortRef = useRef(null);
+  const isPlayingRef = useRef(false);
+  const playReleaseRef = useRef(null);
   const activateTalk = useCallback(() => {
     if (idleTransitionTimeoutRef.current) {
       clearTimeout(idleTransitionTimeoutRef.current);
@@ -13325,144 +13574,307 @@ const useTTSDetection = ({
     }
     activateTalk();
   }, [activateTalk]);
-  const speak = useCallback(async (text, options = {}) => {
-    const keylessProviders = ["tiktok", "piper"];
-    if (ttsProvider !== "browser" && (ttsConfig.ttsApiKey || keylessProviders.includes(ttsProvider))) {
-      if (options.cancelPrevious && audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-        setIsTalking(false);
-        if (onTalkEnd) onTalkEnd();
-      }
+  const revokeAllUrls = useCallback(() => {
+    for (const url of pendingUrlsRef.current) {
       try {
-        const { audioUrl } = await professionalTTSRequest(text, ttsProvider, ttsConfig);
-        const audio = new Audio(audioUrl);
-        audioRef.current = audio;
-        audio.onplay = () => {
-          isSpeakingRef.current = true;
-          resetPauseTimeout();
-        };
-        audio.onended = () => {
-          isSpeakingRef.current = false;
-          audioRef.current = null;
-          URL.revokeObjectURL(audioUrl);
-          if (idleTransitionTimeoutRef.current) {
-            clearTimeout(idleTransitionTimeoutRef.current);
-          }
-          idleTransitionTimeoutRef.current = setTimeout(() => {
-            setIsTalking(false);
-            if (onTalkEnd) onTalkEnd();
-            idleTransitionTimeoutRef.current = null;
-          }, idleTransitionDelay);
-        };
-        audio.onerror = (error) => {
-          isSpeakingRef.current = false;
-          setIsTalking(false);
-          if (onTalkEnd) onTalkEnd();
-          audioRef.current = null;
-          URL.revokeObjectURL(audioUrl);
-        };
-        await audio.play();
-        return audio;
-      } catch (error) {
+        URL.revokeObjectURL(url);
+      } catch (e) {
       }
     }
-    if (!window.speechSynthesis) {
+    pendingUrlsRef.current.clear();
+  }, []);
+  const hardStop = useCallback(() => {
+    genRef.current += 1;
+    if (synthAbortRef.current) {
+      try {
+        synthAbortRef.current.abort();
+      } catch (e) {
+      }
+      synthAbortRef.current = null;
+    }
+    if (gapTimeoutRef.current) {
+      clearTimeout(gapTimeoutRef.current);
+      gapTimeoutRef.current = null;
+    }
+    if (pauseTimeoutRef.current) {
+      clearTimeout(pauseTimeoutRef.current);
+      pauseTimeoutRef.current = null;
+    }
+    if (audioRef.current) {
+      const a = audioRef.current;
+      audioRef.current = null;
+      try {
+        a.onended = null;
+        a.onerror = null;
+        a.onplay = null;
+        a.pause();
+        a.currentTime = 0;
+        a.removeAttribute("src");
+        a.src = "";
+        a.load();
+      } catch (e) {
+      }
+    }
+    if (playReleaseRef.current) {
+      const release = playReleaseRef.current;
+      playReleaseRef.current = null;
+      try {
+        release();
+      } catch (e) {
+      }
+    }
+    if (window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch (e) {
+      }
+    }
+    currentUtteranceRef.current = null;
+    isSpeakingRef.current = false;
+    isPlayingRef.current = false;
+    revokeAllUrls();
+  }, [revokeAllUrls]);
+  const scheduleIdle = useCallback(() => {
+    if (idleTransitionTimeoutRef.current) {
+      clearTimeout(idleTransitionTimeoutRef.current);
+    }
+    idleTransitionTimeoutRef.current = setTimeout(() => {
+      setIsTalking(false);
+      if (onTalkEnd) onTalkEnd();
+      idleTransitionTimeoutRef.current = null;
+    }, idleTransitionDelay);
+  }, [idleTransitionDelay, onTalkEnd]);
+  const synthChunkAudio = useCallback(async (chunkStr, signal) => {
+    const { audioUrl } = await professionalTTSRequest(chunkStr, ttsProvider, ttsConfig);
+    pendingUrlsRef.current.add(audioUrl);
+    if (signal && signal.aborted) {
+      try {
+        URL.revokeObjectURL(audioUrl);
+      } catch (e) {
+      }
+      pendingUrlsRef.current.delete(audioUrl);
+      throw new DOMException("aborted", "AbortError");
+    }
+    return audioUrl;
+  }, [ttsProvider, ttsConfig]);
+  const playChunkAudio = useCallback((audioUrl, myGen) => new Promise((resolve) => {
+    const cleanup = () => {
+      try {
+        URL.revokeObjectURL(audioUrl);
+      } catch (e) {
+      }
+      pendingUrlsRef.current.delete(audioUrl);
+    };
+    if (genRef.current !== myGen) {
+      cleanup();
+      resolve();
       return;
     }
-    if (options.cancelPrevious && (currentUtteranceRef.current || window.speechSynthesis.speaking)) {
-      window.speechSynthesis.cancel();
-      if (pauseTimeoutRef.current) {
-        clearTimeout(pauseTimeoutRef.current);
-        pauseTimeoutRef.current = null;
-      }
-      if (idleTransitionTimeoutRef.current) {
-        clearTimeout(idleTransitionTimeoutRef.current);
-        idleTransitionTimeoutRef.current = null;
-      }
+    if (isPlayingRef.current) {
+      cleanup();
+      resolve();
+      return;
+    }
+    const audio = new Audio(audioUrl);
+    audio.preload = "auto";
+    audioRef.current = audio;
+    isPlayingRef.current = true;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      isPlayingRef.current = false;
       isSpeakingRef.current = false;
-      setIsTalking(false);
-      if (onTalkEnd) onTalkEnd();
-      currentUtteranceRef.current = null;
+      playReleaseRef.current = null;
+      try {
+        audio.onended = null;
+        audio.onerror = null;
+        audio.onplay = null;
+      } catch (e) {
+      }
+      if (audioRef.current === audio) audioRef.current = null;
+      cleanup();
+      resolve();
+    };
+    playReleaseRef.current = finish;
+    if (onChunkAudio) {
+      try {
+        onChunkAudio(audio);
+      } catch (e) {
+      }
     }
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = options.lang || "pt-BR";
-    utterance.rate = options.rate || 1;
-    utterance.pitch = options.pitch || 1;
-    utterance.volume = options.volume || 1;
-    if (options.voice) {
-      utterance.voice = options.voice;
-    }
-    currentUtteranceRef.current = utterance;
-    utterance.onstart = () => {
+    audio.onplay = () => {
       isSpeakingRef.current = true;
-      lastBoundaryTimeRef.current = Date.now();
       resetPauseTimeout();
     };
-    utterance.onboundary = (event) => {
-      lastBoundaryTimeRef.current = Date.now();
-      resetPauseTimeout();
+    audio.onended = finish;
+    audio.onerror = finish;
+    audio.play().catch(() => {
+      finish();
+    });
+  }), [onChunkAudio, resetPauseTimeout]);
+  const gapWait = useCallback((ms2, myGen) => new Promise((resolve) => {
+    if (ms2 <= 0 || genRef.current !== myGen) {
+      resolve();
+      return;
+    }
+    gapTimeoutRef.current = setTimeout(() => {
+      gapTimeoutRef.current = null;
+      resolve();
+    }, ms2);
+  }), []);
+  const runAudioQueue = useCallback(async (chunks, myGen) => {
+    const gap = chunkGapMs;
+    const abort = new AbortController();
+    synthAbortRef.current = abort;
+    const PREFETCH_DEPTH = 2;
+    const ahead = [];
+    let fetched = 0;
+    const fillAhead = () => {
+      while (fetched < chunks.length && ahead.length < PREFETCH_DEPTH + 1) {
+        ahead.push(synthChunkAudio(chunks[fetched], abort.signal).catch(() => null));
+        fetched++;
+      }
     };
-    utterance.onend = () => {
-      if (pauseTimeoutRef.current) {
-        clearTimeout(pauseTimeoutRef.current);
-        pauseTimeoutRef.current = null;
+    fillAhead();
+    for (let i = 0; i < chunks.length; i++) {
+      if (genRef.current !== myGen) return true;
+      let audioUrl;
+      try {
+        audioUrl = await ahead.shift();
+      } catch (e) {
+        audioUrl = null;
       }
-      if (talkStartTimeoutRef.current) {
-        clearTimeout(talkStartTimeoutRef.current);
-        talkStartTimeoutRef.current = null;
+      if (genRef.current !== myGen) return true;
+      if (i === 0 && !audioUrl) {
+        return false;
       }
-      isSpeakingRef.current = false;
-      lastBoundaryTimeRef.current = null;
-      currentUtteranceRef.current = null;
-      if (idleTransitionTimeoutRef.current) {
-        clearTimeout(idleTransitionTimeoutRef.current);
+      fillAhead();
+      if (audioUrl) {
+        await playChunkAudio(audioUrl, myGen);
       }
-      idleTransitionTimeoutRef.current = setTimeout(() => {
-        setIsTalking(false);
-        if (onTalkEnd) onTalkEnd();
-        idleTransitionTimeoutRef.current = null;
-      }, idleTransitionDelay);
+      if (genRef.current !== myGen) return true;
+      if (i + 1 < chunks.length) {
+        await gapWait(gap, myGen);
+        if (genRef.current !== myGen) return true;
+      }
+    }
+    if (genRef.current !== myGen) return true;
+    if (synthAbortRef.current) synthAbortRef.current = null;
+    scheduleIdle();
+    return true;
+  }, [chunkGapMs, synthChunkAudio, playChunkAudio, gapWait, scheduleIdle]);
+  const runBrowserQueue = useCallback((chunks, myGen, options) => {
+    if (!window.speechSynthesis) return;
+    let i = 0;
+    const speakNext = () => {
+      if (genRef.current !== myGen) return;
+      if (i >= chunks.length) {
+        if (pauseTimeoutRef.current) {
+          clearTimeout(pauseTimeoutRef.current);
+          pauseTimeoutRef.current = null;
+        }
+        isSpeakingRef.current = false;
+        lastBoundaryTimeRef.current = null;
+        currentUtteranceRef.current = null;
+        scheduleIdle();
+        return;
+      }
+      const chunkStr = chunks[i];
+      const utterance = new SpeechSynthesisUtterance(chunkStr);
+      utterance.lang = options.lang || "pt-BR";
+      utterance.rate = options.rate || 1;
+      utterance.pitch = options.pitch || 1;
+      utterance.volume = options.volume || 1;
+      if (options.voice) utterance.voice = options.voice;
+      currentUtteranceRef.current = utterance;
+      utterance.onstart = () => {
+        if (genRef.current !== myGen) return;
+        isSpeakingRef.current = true;
+        lastBoundaryTimeRef.current = Date.now();
+        resetPauseTimeout();
+      };
+      utterance.onboundary = () => {
+        lastBoundaryTimeRef.current = Date.now();
+        resetPauseTimeout();
+      };
+      utterance.onend = () => {
+        if (genRef.current !== myGen) return;
+        isSpeakingRef.current = false;
+        lastBoundaryTimeRef.current = null;
+        i += 1;
+        const isLast = i >= chunks.length;
+        const gap = isLast ? 0 : chunkGapMs;
+        if (gap > 0) {
+          if (gapTimeoutRef.current) clearTimeout(gapTimeoutRef.current);
+          gapTimeoutRef.current = setTimeout(() => {
+            gapTimeoutRef.current = null;
+            speakNext();
+          }, gap);
+        } else {
+          speakNext();
+        }
+      };
+      utterance.onerror = (event) => {
+        if (event.error === "interrupted" || genRef.current !== myGen) return;
+        isSpeakingRef.current = false;
+        lastBoundaryTimeRef.current = null;
+        i += 1;
+        speakNext();
+      };
+      window.speechSynthesis.speak(utterance);
     };
-    utterance.onerror = (event) => {
-      if (pauseTimeoutRef.current) {
-        clearTimeout(pauseTimeoutRef.current);
-        pauseTimeoutRef.current = null;
-      }
-      if (idleTransitionTimeoutRef.current) {
-        clearTimeout(idleTransitionTimeoutRef.current);
-        idleTransitionTimeoutRef.current = null;
-      }
-      isSpeakingRef.current = false;
-      lastBoundaryTimeRef.current = null;
-      if (event.error !== "interrupted") {
-        setIsTalking(false);
-        if (onTalkEnd) onTalkEnd();
-      }
-      currentUtteranceRef.current = null;
-    };
-    utterance.onpause = () => {
-      if (pauseTimeoutRef.current) {
-        clearTimeout(pauseTimeoutRef.current);
-        pauseTimeoutRef.current = null;
-      }
-      if (idleTransitionTimeoutRef.current) {
-        clearTimeout(idleTransitionTimeoutRef.current);
-        idleTransitionTimeoutRef.current = null;
-      }
+    speakNext();
+  }, [chunkGapMs, resetPauseTimeout, scheduleIdle]);
+  const speak = useCallback(async (text, options = {}) => {
+    if (text == null || !String(text).trim()) return;
+    if (options.cancelPrevious) {
+      hardStop();
       setIsTalking(false);
       if (onTalkEnd) onTalkEnd();
-    };
-    utterance.onresume = () => {
-      resetPauseTimeout();
-    };
-    window.speechSynthesis.speak(utterance);
-    return utterance;
-  }, [onTalkStart, onTalkEnd, resetPauseTimeout, ttsProvider, ttsConfig, idleTransitionDelay]);
-  const cancel = useCallback(() => {
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
+    } else {
+      hardStop();
     }
+    const myGen = genRef.current;
+    const doChunk = options.ttsChunking ?? ttsChunking;
+    const chunks = doChunk ? chunkText(String(text), {
+      minChunkChars: options.minChunkChars ?? minChunkChars,
+      maxChunkChars: options.maxChunkChars ?? maxChunkChars,
+      firstChunkMaxChars: options.firstChunkMaxChars ?? firstChunkMaxChars,
+      splitOnSemicolon: options.splitOnSemicolon ?? splitOnSemicolon
+    }) : [String(text).trim()];
+    if (chunks.length === 0) return;
+    const keylessProviders = ["tiktok", "piper"];
+    const useCloud = ttsProvider !== "browser" && (ttsConfig.ttsApiKey || keylessProviders.includes(ttsProvider));
+    activateTalk();
+    if (useCloud) {
+      let handled = false;
+      try {
+        handled = await runAudioQueue(chunks, myGen);
+      } catch (error) {
+        handled = false;
+      }
+      if (genRef.current !== myGen) return;
+      if (handled) return;
+    }
+    if (!window.speechSynthesis) return;
+    runBrowserQueue(chunks, myGen, options);
+  }, [
+    ttsProvider,
+    ttsConfig,
+    ttsChunking,
+    minChunkChars,
+    maxChunkChars,
+    firstChunkMaxChars,
+    splitOnSemicolon,
+    hardStop,
+    onTalkEnd,
+    activateTalk,
+    runAudioQueue,
+    runBrowserQueue
+  ]);
+  const cancel = useCallback(() => {
+    hardStop();
     if (pauseTimeoutRef.current) {
       clearTimeout(pauseTimeoutRef.current);
       pauseTimeoutRef.current = null;
@@ -13471,23 +13883,21 @@ const useTTSDetection = ({
       clearTimeout(idleTransitionTimeoutRef.current);
       idleTransitionTimeoutRef.current = null;
     }
-    isSpeakingRef.current = false;
+    if (talkStartTimeoutRef.current) {
+      clearTimeout(talkStartTimeoutRef.current);
+      talkStartTimeoutRef.current = null;
+    }
     lastBoundaryTimeRef.current = null;
-    currentUtteranceRef.current = null;
     setIsTalking(false);
     if (onTalkEnd) onTalkEnd();
-  }, [onTalkEnd]);
+  }, [hardStop, onTalkEnd]);
   useEffect(() => {
     return () => {
-      if (pauseTimeoutRef.current) {
-        clearTimeout(pauseTimeoutRef.current);
-      }
-      if (idleTransitionTimeoutRef.current) {
-        clearTimeout(idleTransitionTimeoutRef.current);
-      }
-      if (talkStartTimeoutRef.current) {
-        clearTimeout(talkStartTimeoutRef.current);
-      }
+      hardStop();
+      if (pauseTimeoutRef.current) clearTimeout(pauseTimeoutRef.current);
+      if (idleTransitionTimeoutRef.current) clearTimeout(idleTransitionTimeoutRef.current);
+      if (talkStartTimeoutRef.current) clearTimeout(talkStartTimeoutRef.current);
+      if (gapTimeoutRef.current) clearTimeout(gapTimeoutRef.current);
     };
   }, []);
   return {
@@ -13702,6 +14112,18 @@ const useSpeechRecognition = ({
     clearTranscript
   };
 };
+const DEFAULT_GENERIC_ERROR = "Tive um probleminha aqui, pode tentar de novo?";
+function resolveGenericError(translate) {
+  if (typeof translate === "function") {
+    const out = translate("chat.error.generic");
+    if (out && out !== "chat.error.generic") return out;
+  }
+  return DEFAULT_GENERIC_ERROR;
+}
+function isRetriable(status) {
+  return status == null || status >= 500;
+}
+const RETRY_DELAY_MS = 1200;
 const useChatbot = ({
   webhookUrl,
   webhookApiKey = null,
@@ -13711,7 +14133,10 @@ const useChatbot = ({
   formatRequest,
   parseResponse,
   availableActions = [],
-  onActionTriggered
+  onActionTriggered,
+  // Optional i18n resolver (AvatarChatbot passes tr.t). Used only to localize
+  // the user-facing fallback message; the hook works without it.
+  translate
 } = {}) => {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -13749,13 +14174,32 @@ const useChatbot = ({
         headers["Authorization"] = `Bearer ${webhookApiKey}`;
         headers["X-API-Key"] = webhookApiKey;
       }
-      const response = await fetch(webhookUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody)
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      const body = JSON.stringify(requestBody);
+      const attempt = async () => {
+        let response2;
+        try {
+          response2 = await fetch(webhookUrl, { method: "POST", headers, body });
+        } catch (netErr) {
+          const e = new Error(netErr && netErr.message ? netErr.message : "network error");
+          e.status = null;
+          e.cause = netErr;
+          throw e;
+        }
+        if (!response2.ok) {
+          const e = new Error(`HTTP ${response2.status}: ${response2.statusText}`);
+          e.status = response2.status;
+          throw e;
+        }
+        return response2;
+      };
+      let response;
+      try {
+        response = await attempt();
+      } catch (firstErr) {
+        if (!isRetriable(firstErr.status)) throw firstErr;
+        console.error("[useChatbot] webhook failed, retrying once in " + RETRY_DELAY_MS + "ms:", firstErr);
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        response = await attempt();
       }
       const data = await response.json();
       let responseText = "";
@@ -13793,7 +14237,8 @@ const useChatbot = ({
       setIsLoading(false);
       return botMessage;
     } catch (err) {
-      const friendlyMessage = "O sistema está em desenvolvimento. Aguarde, lançamento em breve!";
+      console.error("[useChatbot] webhook error (shown to user as friendly copy):", err);
+      const friendlyMessage = resolveGenericError(translate);
       const errorMessage = {
         id: Date.now() + 1,
         role: "assistant",
@@ -13802,14 +14247,14 @@ const useChatbot = ({
         isError: true
       };
       setMessages((prev) => [...prev, errorMessage]);
-      setError(err.message);
+      setError(friendlyMessage);
       if (onError) {
         onError(err, friendlyMessage);
       }
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered, translate]);
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
@@ -13822,6 +14267,731 @@ const useChatbot = ({
     clearMessages
   };
 };
+function getNode(flowDef, nodeId) {
+  if (!flowDef || !flowDef.nodes || nodeId == null) return null;
+  return flowDef.nodes[nodeId] || null;
+}
+function interpolate(text, collected) {
+  if (text == null) return "";
+  const str = String(text);
+  if (str.indexOf("{") === -1) return str;
+  const map = collected || {};
+  const fill = (s) => s.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (_m, k) => {
+    const v = map[k];
+    return v == null ? "" : String(v);
+  }).replace(/\{\s*([\w.-]+)\s*\}/g, (_m, k) => {
+    const v = map[k];
+    return v == null ? "" : String(v);
+  });
+  return fill(str).replace(/[ \t]+([,.;:!?])/g, "$1").replace(/[ \t]{2,}/g, " ").trim();
+}
+function resolvePrompt(prompt, translate, collected) {
+  if (prompt == null) return "";
+  let out = String(prompt);
+  if (typeof translate === "function") {
+    const t = translate(prompt);
+    if (t != null && t !== prompt) out = String(t);
+  }
+  return interpolate(out, collected);
+}
+function visibleOptions(node) {
+  if (!node || !Array.isArray(node.options)) return [];
+  return node.options;
+}
+function nodeInput(node) {
+  if (!node || !node.input || typeof node.input !== "object") return null;
+  if (node.input.key == null) return null;
+  return node.input;
+}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function isValidPhoneBR(value) {
+  const digits = String(value).replace(/\D/g, "");
+  const national = digits.startsWith("55") && digits.length > 11 ? digits.slice(2) : digits;
+  return national.length === 10 || national.length === 11;
+}
+function isValidCEP(value) {
+  return /^\d{5}-?\d{3}$/.test(String(value).trim());
+}
+const BUILTIN_VALIDATORS = {
+  email: (v) => EMAIL_RE.test(String(v).trim()),
+  phone: isValidPhoneBR,
+  cep: isValidCEP
+};
+function validateInput(input, rawValue) {
+  if (!input) return { ok: true };
+  const value = rawValue == null ? "" : String(rawValue).trim();
+  const required = input.required !== false;
+  const errKey = input.errorMsg || "chat.flow.inputInvalid";
+  if (value === "") {
+    return required ? { ok: false, errorKey: errKey } : { ok: true };
+  }
+  const rule = input.validate;
+  if (rule != null && rule !== "") {
+    const builtin = BUILTIN_VALIDATORS[String(rule).toLowerCase()];
+    if (builtin) {
+      return builtin(value) ? { ok: true } : { ok: false, errorKey: errKey };
+    }
+    let re = null;
+    try {
+      re = new RegExp(rule);
+    } catch (_) {
+      re = null;
+    }
+    if (re && !re.test(value)) return { ok: false, errorKey: errKey };
+  }
+  return { ok: true };
+}
+function applyCapture(collected, option) {
+  if (!option || option.capture == null) return collected;
+  const next = { ...collected };
+  if (typeof option.capture === "string") {
+    next[option.capture] = option.value;
+  } else if (typeof option.capture === "object") {
+    Object.assign(next, option.capture);
+  }
+  return next;
+}
+function initialState(seed) {
+  return {
+    currentNodeId: null,
+    backStack: [],
+    collected: seed && typeof seed === "object" ? { ...seed } : {},
+    done: false,
+    escalated: false,
+    inputError: null
+  };
+}
+function inputAlreadyKnown(input, collected) {
+  if (!input || input.key == null) return false;
+  const v = (collected || {})[input.key];
+  if (v == null || String(v).trim() === "") return false;
+  return validateInput(input, v).ok;
+}
+function consentAlreadyGiven(consentKey, collected) {
+  if (consentKey == null) return false;
+  const v = (collected || {})[consentKey];
+  if (v == null) return false;
+  if (v === false) return false;
+  const s = String(v).trim().toLowerCase();
+  if (s === "" || s === "false" || s === "recusado" || s === "declined" || s === "no") return false;
+  return true;
+}
+function consentAdvanceNext(node, consentKey) {
+  if (!node || !Array.isArray(node.options)) return null;
+  for (const opt of node.options) {
+    if (!opt || opt.next == null) continue;
+    let capturesConsent = false;
+    let capturedVal;
+    if (typeof opt.capture === "string" && opt.capture === consentKey) {
+      capturesConsent = true;
+      capturedVal = opt.value;
+    } else if (opt.capture && typeof opt.capture === "object" && consentKey in opt.capture) {
+      capturesConsent = true;
+      capturedVal = opt.capture[consentKey];
+    }
+    if (!capturesConsent) continue;
+    const s = capturedVal == null ? "" : String(capturedVal).trim().toLowerCase();
+    if (s === "false" || s === "recusado" || s === "declined" || s === "no") continue;
+    return opt.next;
+  }
+  return null;
+}
+function resolveLanding(flowDef, targetId, collected, consentKey) {
+  const skipped = [];
+  let id2 = targetId;
+  const limit = flowDef && flowDef.nodes ? Object.keys(flowDef.nodes).length + 1 : 1;
+  for (let i = 0; i < limit; i++) {
+    const node = getNode(flowDef, id2);
+    if (!node) break;
+    if (node.alwaysAsk === true) break;
+    const input = nodeInput(node);
+    if (input) {
+      if (!inputAlreadyKnown(input, collected)) break;
+      const nextId = input.next != null ? input.next : null;
+      if (nextId == null || nextId === id2) break;
+      skipped.push(id2);
+      id2 = nextId;
+      continue;
+    }
+    if (consentKey != null && consentAlreadyGiven(consentKey, collected)) {
+      const nextId = consentAdvanceNext(node, consentKey);
+      if (nextId != null && nextId !== id2) {
+        skipped.push(id2);
+        id2 = nextId;
+        continue;
+      }
+    }
+    break;
+  }
+  return { landingId: id2, skipped };
+}
+function knownName(collected) {
+  const c = collected || {};
+  for (const k of ["name", "nome", "firstName", "fullName"]) {
+    if (c[k] != null && String(c[k]).trim() !== "") return String(c[k]).trim();
+  }
+  return null;
+}
+function returningGreetingText(collected, translate) {
+  const name = knownName(collected);
+  const key = name ? "chat.flow.welcomeBackNamed" : "chat.flow.welcomeBack";
+  let tmpl = name ? "Bem-vindo de volta, {name}!" : "Bem-vindo de volta!";
+  if (typeof translate === "function") {
+    const t = translate(key);
+    if (t != null && t !== key) tmpl = String(t);
+  }
+  return interpolate(tmpl, collected);
+}
+function enterEffects(flowDef, nodeId, collected, translate, opts = {}) {
+  const node = getNode(flowDef, nodeId);
+  const effects = [];
+  if (!node) return effects;
+  if (opts.returning) {
+    const name = knownName(collected);
+    if (name) {
+      const landingText = node.prompt != null ? resolvePrompt(node.prompt, translate, collected) : "";
+      const alreadyNamesUser = landingText.indexOf(name) !== -1;
+      if (!alreadyNamesUser) {
+        const greet = returningGreetingText(collected, translate);
+        if (greet) {
+          effects.push({ type: "message", text: greet });
+          if (node.speak !== false) effects.push({ type: "speak", text: greet });
+        }
+      }
+    }
+  }
+  if (node.prompt != null) {
+    const text = resolvePrompt(node.prompt, translate, collected);
+    effects.push({ type: "message", text });
+    if (node.speak !== false) {
+      effects.push({ type: "speak", text });
+    }
+  }
+  if (node.escalate || node.terminal) {
+    if (node.escalate) effects.push({ type: "escalate", collected });
+  }
+  return effects;
+}
+function flowReducer(state, action, flowDef, opts = {}) {
+  const { translate, seed, consentKey } = opts;
+  const safeState = state || initialState(seed);
+  switch (action && action.type) {
+    case "START": {
+      const startId = flowDef && flowDef.startNode;
+      const collected = seed && typeof seed === "object" ? { ...seed } : {};
+      const consented = consentAlreadyGiven(consentKey, collected);
+      const { landingId, skipped } = resolveLanding(flowDef, startId, collected, consentKey);
+      const node = getNode(flowDef, landingId);
+      const returning = consented && landingId !== startId && knownName(collected) != null;
+      const next = {
+        currentNodeId: node ? landingId : null,
+        backStack: skipped,
+        collected,
+        done: !!(node && node.terminal),
+        escalated: !!(node && node.escalate),
+        inputError: null
+      };
+      return { state: next, effects: enterEffects(flowDef, landingId, collected, translate, { returning }) };
+    }
+    case "RESET": {
+      const startId = flowDef && flowDef.startNode;
+      const collected = seed && typeof seed === "object" ? { ...seed } : {};
+      const node = getNode(flowDef, startId);
+      const next = {
+        currentNodeId: node ? startId : null,
+        backStack: [],
+        collected,
+        done: !!(node && node.terminal),
+        escalated: !!(node && node.escalate),
+        inputError: null
+      };
+      return { state: next, effects: enterEffects(flowDef, startId, collected, translate) };
+    }
+    case "RESUME": {
+      const collected = seed && typeof seed === "object" ? { ...seed } : {};
+      const savedId = action.nodeId;
+      const savedNode = getNode(flowDef, savedId);
+      const fromId = savedNode ? savedId : flowDef && flowDef.startNode;
+      const { landingId, skipped } = resolveLanding(flowDef, fromId, collected, consentKey);
+      const node = getNode(flowDef, landingId);
+      const returning = knownName(collected) != null;
+      const next = {
+        currentNodeId: node ? landingId : null,
+        backStack: skipped,
+        collected,
+        done: !!(node && node.terminal),
+        escalated: !!(node && node.escalate),
+        inputError: null
+      };
+      return { state: next, effects: enterEffects(flowDef, landingId, collected, translate, { returning }) };
+    }
+    case "SELECT": {
+      const { option } = action;
+      const current = getNode(flowDef, safeState.currentNodeId);
+      if (!current || !option) return { state: safeState, effects: [] };
+      let collected = applyCapture(safeState.collected, option);
+      if (current.collectKey != null) {
+        collected = { ...collected, [current.collectKey]: option.value };
+      }
+      const captureEffects = [];
+      const before = safeState.collected;
+      for (const key of Object.keys(collected)) {
+        if (collected[key] !== before[key]) {
+          captureEffects.push({ type: "capture", key, value: collected[key], collected });
+        }
+      }
+      const backStack = [...safeState.backStack, safeState.currentNodeId];
+      if (option.escalate) {
+        const next2 = { ...safeState, collected, backStack, escalated: true, inputError: null };
+        return { state: next2, effects: [...captureEffects, { type: "escalate", collected }] };
+      }
+      if (option.terminal) {
+        const next2 = { ...safeState, collected, backStack, done: true, inputError: null };
+        return { state: next2, effects: captureEffects };
+      }
+      const rawNextId = option.next != null ? option.next : null;
+      const { landingId, skipped } = resolveLanding(flowDef, rawNextId, collected, consentKey);
+      const nextNode = getNode(flowDef, landingId);
+      const next = {
+        currentNodeId: nextNode ? landingId : safeState.currentNodeId,
+        backStack: nextNode ? [...backStack, ...skipped] : backStack,
+        collected,
+        done: !!(nextNode && nextNode.terminal),
+        escalated: !!(nextNode && nextNode.escalate),
+        inputError: null
+      };
+      const enter = nextNode ? enterEffects(flowDef, landingId, collected, translate) : [];
+      return { state: next, effects: [...captureEffects, ...enter] };
+    }
+    case "SUBMIT_INPUT": {
+      const current = getNode(flowDef, safeState.currentNodeId);
+      const input = nodeInput(current);
+      if (!input) return { state: safeState, effects: [] };
+      const rawValue = action.value;
+      const result = validateInput(input, rawValue);
+      if (!result.ok) {
+        const next2 = { ...safeState, inputError: result.errorKey };
+        return { state: next2, effects: [] };
+      }
+      const value = rawValue == null ? "" : String(rawValue).trim();
+      let collected = { ...safeState.collected, [input.key]: value };
+      if (current.collectKey != null) {
+        collected = { ...collected, [current.collectKey]: value };
+      }
+      const captureEffects = [];
+      const before = safeState.collected;
+      for (const key of Object.keys(collected)) {
+        if (collected[key] !== before[key]) {
+          captureEffects.push({ type: "capture", key, value: collected[key], collected });
+        }
+      }
+      const backStack = [...safeState.backStack, safeState.currentNodeId];
+      const rawNextId = input.next != null ? input.next : null;
+      const { landingId, skipped } = resolveLanding(flowDef, rawNextId, collected, consentKey);
+      const nextNode = getNode(flowDef, landingId);
+      const next = {
+        currentNodeId: nextNode ? landingId : safeState.currentNodeId,
+        backStack: nextNode ? [...backStack, ...skipped] : backStack,
+        collected,
+        done: !!(nextNode && nextNode.terminal),
+        escalated: !!(nextNode && nextNode.escalate),
+        inputError: null
+      };
+      const enter = nextNode ? enterEffects(flowDef, landingId, collected, translate) : [];
+      return { state: next, effects: [...captureEffects, ...enter] };
+    }
+    case "BACK": {
+      if (safeState.backStack.length === 0) return { state: safeState, effects: [] };
+      const backStack = safeState.backStack.slice(0, -1);
+      const prevId = safeState.backStack[safeState.backStack.length - 1];
+      const prevNode = getNode(flowDef, prevId);
+      const next = {
+        ...safeState,
+        currentNodeId: prevNode ? prevId : safeState.currentNodeId,
+        backStack,
+        done: false,
+        escalated: !!(prevNode && prevNode.escalate),
+        inputError: null
+      };
+      return { state: next, effects: enterEffects(flowDef, prevId, safeState.collected, translate) };
+    }
+    case "GOTO": {
+      const targetId = action.nodeId;
+      const target = getNode(flowDef, targetId);
+      if (!target) return { state: safeState, effects: [] };
+      const backStack = safeState.currentNodeId != null ? [...safeState.backStack, safeState.currentNodeId] : safeState.backStack;
+      const next = {
+        ...safeState,
+        currentNodeId: targetId,
+        backStack,
+        done: !!target.terminal,
+        escalated: !!target.escalate,
+        inputError: null
+      };
+      return { state: next, effects: enterEffects(flowDef, targetId, safeState.collected, translate) };
+    }
+    default:
+      return { state: safeState, effects: [] };
+  }
+}
+function genSessionId() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch (_) {
+  }
+  return "flow-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+}
+const PERSIST_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
+function persistStore() {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) return window.localStorage;
+  } catch (_) {
+  }
+  return null;
+}
+function loadPersisted(key) {
+  const store = persistStore();
+  if (!store || !key) return null;
+  try {
+    const raw = store.getItem(key);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object") return null;
+    if (typeof data.ts === "number" && Date.now() - data.ts > PERSIST_TTL_MS) {
+      store.removeItem(key);
+      return null;
+    }
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+function savePersisted(key, payload) {
+  const store = persistStore();
+  if (!store || !key) return;
+  try {
+    store.setItem(key, JSON.stringify({ ...payload, ts: Date.now() }));
+  } catch (_) {
+  }
+}
+function removePersisted(key) {
+  const store = persistStore();
+  if (!store || !key) return;
+  try {
+    store.removeItem(key);
+  } catch (_) {
+  }
+}
+function isConsented(v) {
+  if (v == null) return false;
+  if (v === false) return false;
+  const s = String(v).trim().toLowerCase();
+  if (s === "" || s === "false" || s === "recusado" || s === "declined" || s === "no") return false;
+  return true;
+}
+function useFlowEngine(flowDef, deps = {}) {
+  const {
+    speak,
+    sendMessage,
+    onCapture,
+    onEscalate,
+    onPrompt,
+    appId,
+    lang,
+    translate,
+    initialContext,
+    persist = true,
+    persistKey,
+    consentKey
+  } = deps;
+  const storageKey = useMemo(() => {
+    if (persistKey) return persistKey;
+    const id2 = appId != null ? appId : flowDef && flowDef.id != null ? flowDef.id : "default";
+    return "ania-flow-" + id2;
+  }, [persistKey, appId, flowDef]);
+  const persistedRef = useRef(void 0);
+  if (persistedRef.current === void 0) {
+    persistedRef.current = persist ? loadPersisted(storageKey) : null;
+  }
+  const seed = useMemo(() => {
+    const restored = persist && persistedRef.current && persistedRef.current.collected || {};
+    const known = initialContext && typeof initialContext === "object" ? initialContext : {};
+    const merged = { ...restored, ...known };
+    return Object.keys(merged).length ? merged : null;
+  }, [persist, initialContext]);
+  const sessionIdRef = useRef(null);
+  if (sessionIdRef.current == null) {
+    const restoredSid = persist && persistedRef.current && persistedRef.current.sessionId;
+    sessionIdRef.current = restoredSid || genSessionId();
+  }
+  const sessionId = sessionIdRef.current;
+  const speakRef = useRef(speak);
+  const sendMessageRef = useRef(sendMessage);
+  const onCaptureRef = useRef(onCapture);
+  const onEscalateRef = useRef(onEscalate);
+  const onPromptRef = useRef(onPrompt);
+  const translateRef = useRef(translate);
+  const langRef = useRef(lang);
+  const appIdRef = useRef(appId);
+  useEffect(() => {
+    speakRef.current = speak;
+    sendMessageRef.current = sendMessage;
+    onCaptureRef.current = onCapture;
+    onEscalateRef.current = onEscalate;
+    onPromptRef.current = onPrompt;
+    translateRef.current = translate;
+    langRef.current = lang;
+    appIdRef.current = appId;
+  });
+  const transcriptRef = useRef([]);
+  const runEffect = useCallback((effect) => {
+    switch (effect.type) {
+      case "message": {
+        transcriptRef.current.push({ role: "assistant", text: effect.text });
+        if (onPromptRef.current && effect.text) {
+          onPromptRef.current(effect.text);
+        }
+        break;
+      }
+      case "speak": {
+        if (speakRef.current && effect.text) {
+          speakRef.current(effect.text, { lang: langRef.current, cancelPrevious: true });
+        }
+        break;
+      }
+      case "capture": {
+        if (onCaptureRef.current) {
+          onCaptureRef.current({
+            sessionId: sessionIdRef.current,
+            appId: appIdRef.current,
+            key: effect.key,
+            value: effect.value,
+            collected: effect.collected
+          });
+        }
+        break;
+      }
+      case "escalate": {
+        const transcript = transcriptRef.current.slice();
+        const contact = extractContact(effect.collected);
+        if (onEscalateRef.current) {
+          onEscalateRef.current({
+            collected: effect.collected,
+            contact,
+            sessionId: sessionIdRef.current,
+            transcript
+          });
+        } else if (sendMessageRef.current) {
+          const text = buildEscalationText(effect.collected);
+          sendMessageRef.current(text, {
+            flowId: flowDef && flowDef.id,
+            sessionId: sessionIdRef.current,
+            appId: appIdRef.current,
+            collected: effect.collected,
+            contact,
+            escalate: true
+          });
+        }
+        break;
+      }
+    }
+  }, [flowDef]);
+  const seedRef = useRef(seed);
+  useEffect(() => {
+    seedRef.current = seed;
+  }, [seed]);
+  const pendingEffectsRef = useRef([]);
+  const consentKeyRef = useRef(consentKey);
+  useEffect(() => {
+    consentKeyRef.current = consentKey;
+  });
+  const reducer = useCallback((state2, action) => {
+    const { state: nextState, effects } = flowReducer(state2, action, flowDef, {
+      translate: translateRef.current,
+      seed: seedRef.current,
+      consentKey: consentKeyRef.current
+    });
+    if (effects && effects.length) {
+      pendingEffectsRef.current.push(...effects);
+    }
+    return nextState;
+  }, [flowDef]);
+  const [state, dispatch] = useReducer(reducer, seed, initialState);
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  });
+  useEffect(() => {
+    if (pendingEffectsRef.current.length === 0) return;
+    const queued = pendingEffectsRef.current;
+    pendingEffectsRef.current = [];
+    for (const eff of queued) runEffect(eff);
+  });
+  const startedForRef = useRef(null);
+  const flowKey = flowDef && (flowDef.id != null ? flowDef.id : flowDef);
+  useEffect(() => {
+    if (!flowDef) return;
+    if (startedForRef.current === flowKey) return;
+    startedForRef.current = flowKey;
+    transcriptRef.current = [];
+    const p = persist ? persistedRef.current : null;
+    const restoredCollected = p && p.collected && typeof p.collected === "object" ? p.collected : null;
+    const consentGiven = restoredCollected ? consentKey == null ? true : isConsented(restoredCollected[consentKey]) : false;
+    const savedNodeId = p && typeof p.currentNodeId === "string" ? p.currentNodeId : null;
+    const startNodeId = flowDef.startNode;
+    const canResume = consentGiven && savedNodeId != null && getNode(flowDef, savedNodeId) != null && savedNodeId !== startNodeId;
+    if (canResume) {
+      dispatch({ type: "RESUME", nodeId: savedNodeId });
+    } else if (consentGiven) {
+      dispatch({ type: "START" });
+    } else {
+      dispatch({ type: "START" });
+    }
+  }, [flowDef, flowKey, persist, consentKey]);
+  const currentNode = useMemo(
+    () => getNode(flowDef, state.currentNodeId),
+    [flowDef, state.currentNodeId]
+  );
+  const prevNodeId = state.backStack.length > 0 ? state.backStack[state.backStack.length - 1] : null;
+  const isBackOption = useCallback((opt) => {
+    if (!opt) return false;
+    if (opt.isBack === true) return true;
+    if (prevNodeId != null && opt.next != null && opt.next === prevNodeId) return true;
+    const label = opt.label != null ? String(opt.label).trim() : "";
+    if (label) {
+      const tr2 = translateRef.current;
+      const backLabel = typeof tr2 === "function" ? tr2("chat.flow.back") : null;
+      const norm = (s) => String(s).replace(/^[\s←⬅<-]+/, "").trim().toLowerCase();
+      if (backLabel && backLabel !== "chat.flow.back" && norm(label) === norm(backLabel)) {
+        return true;
+      }
+    }
+    return false;
+  }, [prevNodeId]);
+  const visibleOptions$1 = useMemo(
+    () => visibleOptions(currentNode).filter((opt) => !isBackOption(opt)),
+    [currentNode, isBackOption]
+  );
+  const selectOption = useCallback((opt) => {
+    if (!opt) return;
+    transcriptRef.current.push({ role: "user", text: opt.label != null ? String(opt.label) : String(opt.value) });
+    dispatch({ type: "SELECT", option: opt });
+  }, []);
+  const goBack = useCallback(() => {
+    dispatch({ type: "BACK" });
+  }, []);
+  const clearPersistedFlow = useCallback(() => {
+    removePersisted(storageKey);
+    persistedRef.current = null;
+  }, [storageKey]);
+  const reset = useCallback(() => {
+    transcriptRef.current = [];
+    clearPersistedFlow();
+    dispatch({ type: "RESET" });
+  }, [clearPersistedFlow]);
+  const goto = useCallback((nodeId) => {
+    dispatch({ type: "GOTO", nodeId });
+  }, []);
+  const canGoBack = state.backStack.length > 0;
+  useEffect(() => {
+    if (!persist) return;
+    const consented = consentKey == null ? true : !!state.collected[consentKey];
+    if (!consented) {
+      if (consentKey != null) removePersisted(storageKey);
+      return;
+    }
+    if (!state.collected || Object.keys(state.collected).length === 0) return;
+    savePersisted(storageKey, {
+      sessionId: sessionIdRef.current,
+      collected: state.collected,
+      currentNodeId: state.currentNodeId
+    });
+  }, [persist, consentKey, storageKey, state.collected, state.currentNodeId]);
+  const currentPrompt = useMemo(
+    () => currentNode ? resolvePrompt(currentNode.prompt, translateRef.current, state.collected) : "",
+    [currentNode, state.collected]
+  );
+  const resolveText = useCallback(
+    (text) => resolvePrompt(text, translateRef.current, state.collected),
+    [state.collected]
+  );
+  const resolveLabel = resolveText;
+  const resolvedInputError = useMemo(
+    () => state.inputError ? resolvePrompt(state.inputError, translateRef.current, state.collected) : null,
+    [state.inputError, state.collected]
+  );
+  const currentInput = useMemo(
+    () => nodeInput(currentNode),
+    [currentNode]
+  );
+  const submitInput = useCallback((value) => {
+    if (!currentInput) return { ok: false, error: null };
+    const trimmed = value == null ? "" : String(value).trim();
+    dispatch({ type: "SUBMIT_INPUT", value });
+    const probe = flowReducer(stateRef.current, { type: "SUBMIT_INPUT", value }, flowDef, {
+      translate: translateRef.current
+    });
+    const ok = probe.state.inputError == null;
+    if (ok && trimmed) {
+      transcriptRef.current.push({ role: "user", text: trimmed });
+    }
+    return { ok, error: ok ? null : probe.state.inputError };
+  }, [currentInput, flowDef]);
+  return {
+    currentNode,
+    currentPrompt,
+    currentInput,
+    visibleOptions: visibleOptions$1,
+    resolveLabel,
+    resolveText,
+    selectOption,
+    submitInput,
+    // FULLY-resolved (i18n + {var}-interpolated) validation error — render this
+    // directly (do NOT pass it back through tr.t / interpolate, it's done).
+    inputError: resolvedInputError,
+    goBack,
+    canGoBack,
+    reset,
+    goto,
+    clearPersistedFlow,
+    collected: state.collected,
+    sessionId,
+    isEscalated: state.escalated,
+    isDone: state.done
+  };
+}
+function extractContact(collected) {
+  const c = collected || {};
+  const pick = (...keys) => {
+    for (const k of keys) {
+      if (c[k] != null && String(c[k]).trim() !== "") return String(c[k]).trim();
+    }
+    return void 0;
+  };
+  const contact = {};
+  const name = pick("name", "nome", "fullName", "firstName");
+  const phone = pick("phone", "telefone", "whatsapp", "celular", "tel", "fone");
+  const email = pick("email", "mail", "e-mail");
+  if (name) contact.name = name;
+  if (phone) contact.phone = phone;
+  if (email) contact.email = email;
+  return contact;
+}
+function buildEscalationText(collected) {
+  const entries = Object.entries(collected || {});
+  if (entries.length === 0) return "O usuário deseja falar com o atendimento.";
+  const contact = extractContact(collected);
+  const lines = entries.map(([k, v]) => `${k}: ${v}`).join("; ");
+  const who = contact.name ? `O usuário ${contact.name} deseja` : "O usuário deseja";
+  const contactBits = [];
+  if (contact.name) contactBits.push(`nome: ${contact.name}`);
+  if (contact.phone) contactBits.push(`telefone: ${contact.phone}`);
+  if (contact.email) contactBits.push(`e-mail: ${contact.email}`);
+  const contactLine = contactBits.length ? ` Contato — ${contactBits.join("; ")}.` : "";
+  return `${who} falar com o atendimento.${contactLine} Contexto: ${lines}.`;
+}
 const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } = {}) => {
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -14857,9 +16027,19 @@ const ensureDeps = () => {
     OnnxWebWorkerRuntime = piperMod.OnnxWebWorkerRuntime;
     FetchProvider = piperMod.FetchProvider;
     ort.env.wasm.proxy = false;
-    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.numThreads = wasmThreadCount();
   })();
   return depsPromise;
+};
+const wasmThreadCount = () => {
+  try {
+    if (typeof crossOriginIsolated !== "undefined" && crossOriginIsolated) {
+      const cores = typeof navigator !== "undefined" && navigator.hardwareConcurrency || 2;
+      return Math.max(1, Math.min(4, cores - 1));
+    }
+  } catch (e) {
+  }
+  return 1;
 };
 let engine = null;
 let initPromise = null;
@@ -14896,10 +16076,11 @@ const buildVoiceProvider = (modelUrl, modelConfigUrl, options) => {
   };
 };
 const buildEngine = (voiceProvider) => {
+  const numThreads = wasmThreadCount();
   if (useWorkerRuntime) {
     try {
       return new PiperWebEngine({
-        onnxRuntime: new OnnxWebWorkerRuntime({ numThreads: 1 }),
+        onnxRuntime: new OnnxWebWorkerRuntime({ numThreads }),
         voiceProvider
       });
     } catch (err) {
@@ -14908,9 +16089,27 @@ const buildEngine = (voiceProvider) => {
     }
   }
   return new PiperWebEngine({
-    onnxRuntime: new OnnxWebRuntime({ numThreads: 1 }),
+    onnxRuntime: new OnnxWebRuntime({ numThreads }),
     voiceProvider
   });
+};
+const SYNTH_CACHE_MAX = 24;
+const synthCache = /* @__PURE__ */ new Map();
+const cacheGet = (key) => {
+  const blob = synthCache.get(key);
+  if (blob) {
+    synthCache.delete(key);
+    synthCache.set(key, blob);
+  }
+  return blob || null;
+};
+const cachePut = (key, blob) => {
+  if (synthCache.has(key)) synthCache.delete(key);
+  synthCache.set(key, blob);
+  while (synthCache.size > SYNTH_CACHE_MAX) {
+    const oldest = synthCache.keys().next().value;
+    synthCache.delete(oldest);
+  }
 };
 const initPiper = async (modelUrl, modelConfigUrl, options = {}) => {
   if (engine && piperStatus.ready) return engine;
@@ -14965,8 +16164,14 @@ const piperSynthesize = async (text, options = {}) => {
   }
   try {
     const speakerId = options.speakerId ?? 0;
+    const cacheKey = `${currentVoiceName}|${speakerId}|${text}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      return { audioUrl: URL.createObjectURL(cached), blob: cached, cached: true };
+    }
     const response = await engine.generate(text, currentVoiceName, speakerId);
     const blob = response.file;
+    cachePut(cacheKey, blob);
     const audioUrl = URL.createObjectURL(blob);
     return { audioUrl, blob };
   } catch (err) {
@@ -15016,6 +16221,7 @@ const COMMAND_LIST = [
   { cmd: "tts <text>", desc: "Speak literal text via TTS (no LLM)." },
   { cmd: "ask <text>", desc: "Send text to the chatbot/LLM; reply is spoken." },
   { cmd: "provider <text>", desc: 'Alias of "ask".' },
+  { cmd: "flow <nodeId>", desc: "Jump the NO-AI flow to a node id." },
   { cmd: "wake", desc: "Trigger the wake/assistant pipeline manually." },
   { cmd: "stop", desc: "Stop speaking / listening." },
   { cmd: "help", desc: "List all commands." }
@@ -15137,6 +16343,14 @@ const executeCommand = (line, ctx = {}) => {
         }
         return err("No chatbot/LLM handler wired.");
       }
+      case "flow": {
+        if (!args[0]) return err("Usage: flow <nodeId>");
+        if (ctx.flowGoto) {
+          ctx.flowGoto(args[0]);
+          return ok(`Flow jumped to "${args[0]}".`, { nodeId: args[0] });
+        }
+        return err("No flow engine wired.");
+      }
       case "wake":
       case "assistant":
         if (ctx.triggerWake) {
@@ -15179,11 +16393,11 @@ const installPostMessageControl = (ctx, options = {}) => {
     }
     const result = executeCommand(data.cmd, ctx);
     if (options.onResult) options.onResult(result, event);
-    if (event.source && typeof event.source.postMessage === "function") {
+    if (event.source && typeof event.source.postMessage === "function" && event.origin && event.origin !== "null") {
       try {
         event.source.postMessage(
           { source: "ania-reply", cmd: data.cmd, result },
-          event.origin && event.origin !== "null" ? event.origin : "*"
+          event.origin
         );
       } catch (e) {
       }
@@ -15194,6 +16408,44 @@ const installPostMessageControl = (ctx, options = {}) => {
 };
 const EMPTY_PLUGINS = [];
 const EMPTY_ACTIONS = [];
+function flowInputDomType(type) {
+  switch (type) {
+    case "email":
+      return "email";
+    case "tel":
+      return "tel";
+    case "number":
+      return "number";
+    default:
+      return "text";
+  }
+}
+function flowInputMode(type) {
+  switch (type) {
+    case "email":
+      return "email";
+    case "tel":
+      return "tel";
+    case "number":
+      return "numeric";
+    default:
+      return "text";
+  }
+}
+function flowInputAutocomplete(input) {
+  if (!input) return "off";
+  switch (input.type) {
+    case "email":
+      return "email";
+    case "tel":
+      return "tel";
+  }
+  const key = String(input.key || "").toLowerCase();
+  if (/mail/.test(key)) return "email";
+  if (/phone|whats|tel|cel|fone/.test(key)) return "tel";
+  if (/name|nome/.test(key)) return "name";
+  return "on";
+}
 const AvatarChatbot = ({
   avatarUrl,
   avatarPassword,
@@ -15229,6 +16481,21 @@ const AvatarChatbot = ({
   ttsApiUrl = null,
   ttsVoiceId = null,
   ttsModel = null,
+  // ---- Streaming / chunked TTS ----
+  // When true (default), a long reply is split at sentence boundaries and
+  // spoken sentence-by-sentence through a queue: the first sentence starts
+  // fast and the next is synthesized while the current one plays. Set false to
+  // fall back to one-shot whole-text synthesis (legacy behavior).
+  ttsChunking = true,
+  // Pause inserted between spoken chunks, in milliseconds. The audio already
+  // carries each sentence's trailing silence, so this is just a short breath.
+  chunkGapMs = 250,
+  // Optional: hard-wrap chunks longer than this many chars (0 = off) so a
+  // comma-spliced run-on still streams.
+  maxChunkChars = 0,
+  // Cap ONLY the first spoken chunk (chars) so the very first synthesis is
+  // short and speech starts fast; the rest streams behind it (0 = off).
+  firstChunkMaxChars = 100,
   enableSTT = false,
   sttProvider = "browser",
   sttLang = "pt-BR",
@@ -15297,6 +16564,31 @@ const AvatarChatbot = ({
   // ---- External control (postMessage) ----
   enablePostMessageControl = false,
   postMessageOrigins = null,
+  // ---- NO-AI bubble/balloon flow engine ----
+  // A deterministic decision-tree flow. When set, the avatar speaks each node's
+  // prompt and the user answers by tapping clickable bubbles (no LLM until an
+  // explicit escalation). Omit it and behavior is identical to today.
+  flow = null,
+  // Optional URL to fetch a flow JSON from (ignored when `flow` is supplied).
+  flowUrl = null,
+  // Opaque app/tenant id forwarded to capture/escalation callbacks (for CRM).
+  appId = null,
+  // Fired on every captured answer: ({ sessionId, appId, key, value, collected }).
+  onFlowCapture = null,
+  // Fired when the flow escalates: ({ collected, contact, sessionId, transcript }).
+  // Defaults to forwarding an escalation message to the webhook (sendMessage).
+  onFlowEscalate = null,
+  // Known-user fields pre-seeded into the flow's `collected` (e.g. { name, email }
+  // from the host app's auth/session) so the chat already knows a signed-in user.
+  initialContext = null,
+  // Persist { sessionId, collected, currentNodeId } to localStorage so a
+  // returning visitor in the same browser is remembered (default true).
+  persist = true,
+  // Override the localStorage key (default `ania-flow-<appId|flowId>`).
+  persistKey = null,
+  // A `collected` key gating persistence (LGPD): nothing is written until
+  // `collected[consentKey]` is truthy. Unset = host owns its own consent gating.
+  flowConsentKey = null,
   onClose
 }) => {
   var _a, _b;
@@ -15304,6 +16596,15 @@ const AvatarChatbot = ({
     () => createTranslator(locale, messagesOverride || void 0),
     [locale, messagesOverride]
   );
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const id2 = "ania-flow-keyframes";
+    if (document.getElementById(id2)) return;
+    const style = document.createElement("style");
+    style.id = id2;
+    style.textContent = "@keyframes ania-flow-pop{0%{opacity:0;transform:translateY(8px) scale(0.96);}100%{opacity:1;transform:translateY(0) scale(1);}}.ania-flow-bubble{transition:transform .15s ease,box-shadow .15s ease,filter .15s ease;}.ania-flow-bubble:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,0.22);filter:brightness(1.04);}.ania-flow-bubble:active{transform:translateY(0) scale(0.98);}@keyframes ania-msg-in{0%{opacity:0;transform:translateY(6px);}100%{opacity:1;transform:translateY(0);}}.ania-msg-in{animation:ania-msg-in .22s cubic-bezier(0.22,1,0.36,1) both;}.ania-chat-scroll{scrollbar-width:thin;scrollbar-color:rgba(100,116,139,0.35) transparent;overscroll-behavior:contain;}.ania-chat-scroll::-webkit-scrollbar{width:6px;}.ania-chat-scroll::-webkit-scrollbar-track{background:transparent;}.ania-chat-scroll::-webkit-scrollbar-thumb{background:rgba(100,116,139,0.35);border-radius:999px;}.ania-chat-input{transition:border-color .15s ease,box-shadow .15s ease;}.ania-chat-input:focus{border-color:#6366f1 !important;box-shadow:0 0 0 3px rgba(99,102,241,0.18) !important;}.ania-chat-iconbtn{transition:transform .12s ease,box-shadow .12s ease,background-color .12s ease;}.ania-chat-iconbtn:not(:disabled):hover{transform:translateY(-1px);}.ania-chat-iconbtn:not(:disabled):active{transform:scale(0.94);}@media (prefers-reduced-motion: reduce){.ania-msg-in,.ania-flow-bubble{animation:none !important;}.ania-flow-bubble,.ania-chat-iconbtn{transition:none !important;}}";
+    document.head.appendChild(style);
+  }, []);
   const [inputMessage, setInputMessage] = useState("");
   const [avatarRef, setAvatarRef] = useState(null);
   const [systemMessages, setSystemMessages] = useState([]);
@@ -15313,7 +16614,10 @@ const AvatarChatbot = ({
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [isCurrentlyMinimized, setIsCurrentlyMinimized] = useState(startMinimized);
   const [attachments, setAttachments] = useState([]);
+  const [flowInputValue, setFlowInputValue] = useState("");
+  const [fetchedFlow, setFetchedFlow] = useState(null);
   const messagesEndRef = useRef(null);
+  const flowQuestionRef = useRef(null);
   const hasGreetedRef = useRef(false);
   const speakRef = useRef(null);
   const greetingPendingRef = useRef(null);
@@ -15325,6 +16629,7 @@ const AvatarChatbot = ({
   const speakFnRef = useRef(null);
   const cancelTtsRef = useRef(null);
   const sendMessageRef = useRef(null);
+  const flowGotoRef = useRef(null);
   const pluginsApi = usePlugins({
     plugins: plugins || EMPTY_PLUGINS,
     activeTts: activeTtsPlugin || TTS_PROVIDER_TO_PLUGIN[ttsProvider] || null,
@@ -15353,6 +16658,7 @@ const AvatarChatbot = ({
     const id2 = window.setTimeout(ensurePiperPreload, 0);
     return () => window.clearTimeout(id2);
   }, [piperPreload, ensurePiperPreload]);
+  const lipSyncConnectRef = useRef(null);
   const { isTalking, speak, cancel, audioRef: ttsAudioRef } = useTTSDetection({
     pauseThreshold: 350,
     idleTransitionDelay: postTalkDelay,
@@ -15364,6 +16670,15 @@ const AvatarChatbot = ({
     onTalkEnd: () => {
     },
     ttsProvider,
+    ttsChunking,
+    chunkGapMs,
+    maxChunkChars,
+    firstChunkMaxChars,
+    onChunkAudio: (audioEl) => {
+      if (lipSyncEnabled && lipSyncConnectRef.current && audioEl) {
+        lipSyncConnectRef.current(audioEl);
+      }
+    },
     ttsConfig: {
       ttsApiKey,
       ttsApiUrl,
@@ -15380,6 +16695,9 @@ const AvatarChatbot = ({
     }
   });
   const lipSync = useLipSync({ enabled: lipSyncEnabled && ttsProvider !== "browser" });
+  useEffect(() => {
+    lipSyncConnectRef.current = lipSync.connectAudioElement;
+  }, [lipSync.connectAudioElement]);
   useEffect(() => {
     if (!lipSyncEnabled || !(ttsAudioRef == null ? void 0 : ttsAudioRef.current)) return;
     lipSync.connectAudioElement(ttsAudioRef.current);
@@ -15562,6 +16880,8 @@ const AvatarChatbot = ({
     webhookApiKey,
     webhookHeaders,
     availableActions,
+    // Localize the friendly fallback copy (chat.error.generic) shown on failure.
+    translate: tr2.t,
     onActionTriggered: (actionId) => {
       if (triggerActionFrame) triggerActionFrame(actionId);
     },
@@ -15591,6 +16911,85 @@ const AvatarChatbot = ({
   useEffect(() => {
     sendMessageRef.current = sendMessage;
   }, [sendMessage]);
+  useEffect(() => {
+    if (flow || !flowUrl || typeof fetch === "undefined") return;
+    let cancelled = false;
+    fetch(flowUrl).then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))).then((def) => {
+      if (!cancelled) setFetchedFlow(def);
+    }).catch((err) => console.warn("[AvatarChatbot] flowUrl fetch failed:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [flow, flowUrl]);
+  const activeFlow = flow || fetchedFlow;
+  const flowSpeak = useCallback((text, opts) => {
+    if (!enableTTS || !ttsEnabled || !speakFnRef.current || !text) return;
+    speakFnRef.current(text, {
+      lang: ttsLang,
+      rate: ttsRate,
+      pitch: ttsPitch,
+      voice: selectVoice(),
+      cancelPrevious: true,
+      ...opts
+    });
+  }, [enableTTS, ttsEnabled, ttsLang, ttsRate, ttsPitch, selectVoice]);
+  const flow_ = useFlowEngine(activeFlow, {
+    speak: flowSpeak,
+    sendMessage: (text, meta) => {
+      if (sendMessageRef.current) sendMessageRef.current(text, meta);
+    },
+    appId,
+    lang: ttsLang,
+    translate: tr2.t,
+    initialContext: initialContext || void 0,
+    persist,
+    persistKey: persistKey || void 0,
+    consentKey: flowConsentKey || void 0,
+    onCapture: onFlowCapture || void 0,
+    onEscalate: onFlowEscalate || void 0,
+    // Append each entered node's (resolved) prompt to the visible transcript so
+    // the chat shows the running conversation, not just the current bubbles.
+    onPrompt: (text) => {
+      if (!text) return;
+      setSystemMessages((prev) => [
+        ...prev,
+        {
+          id: "flow-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+          role: "assistant",
+          content: text,
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+          isFlowPrompt: true
+        }
+      ]);
+    }
+  });
+  useEffect(() => {
+    flowGotoRef.current = flow_.goto;
+  }, [flow_.goto]);
+  const flowNodeId = flow_.currentNode ? flow_.currentNode.id : null;
+  useEffect(() => {
+    setFlowInputValue("");
+  }, [flowNodeId]);
+  const handleFlowInputSubmit = useCallback(() => {
+    if (!flow_.currentInput) return;
+    const res = flow_.submitInput(flowInputValue);
+    if (res && res.ok) setFlowInputValue("");
+  }, [flow_, flowInputValue]);
+  const handleFlowInputSkip = useCallback(() => {
+    const input = flow_.currentInput;
+    if (!input || !input.optionalSkip) return;
+    setFlowInputValue("");
+    if (input.next != null) flow_.goto(input.next);
+  }, [flow_]);
+  const buildFlowMetadata = useCallback(() => {
+    if (!activeFlow) return {};
+    return {
+      sessionId: flow_.sessionId,
+      appId,
+      collected: flow_.collected,
+      flowId: activeFlow.id
+    };
+  }, [activeFlow, flow_.sessionId, flow_.collected, appId]);
   const buildCommandCtx = useCallback(() => {
     var _a2;
     return {
@@ -15630,6 +17029,9 @@ const AvatarChatbot = ({
         if (onWake) onWake();
         else if (wakeTriggerRef.current) wakeTriggerRef.current();
       },
+      flowGoto: (nodeId) => {
+        if (flowGotoRef.current) flowGotoRef.current(nodeId);
+      },
       logger: console
     };
   }, [avatarRef, availableActions, triggerActionFrame, cancelActionFrame, isCurrentlyMinimized, ttsLang, ttsRate, ttsPitch, selectVoice, onWake]);
@@ -15661,6 +17063,10 @@ const AvatarChatbot = ({
   }, [enablePostMessageControl, postMessageOrigins, buildCommandCtx]);
   useEffect(() => {
     if (!autoGreeting || hasGreetedRef.current || !isAvatarLoaded) return;
+    if (activeFlow) {
+      hasGreetedRef.current = true;
+      return;
+    }
     const greetings2 = tr2.list("greetings");
     const randomGreeting = greetings2[Math.floor(Math.random() * greetings2.length)];
     greetingPendingRef.current = randomGreeting;
@@ -15676,7 +17082,7 @@ const AvatarChatbot = ({
     return () => {
       clearTimeout(timer);
     };
-  }, [autoGreeting, isAvatarLoaded]);
+  }, [autoGreeting, isAvatarLoaded, activeFlow]);
   useEffect(() => {
     if (ttsEnabled && greetingPendingRef.current && speakRef.current && !isCurrentlyMinimized) {
       const greetingText = greetingPendingRef.current;
@@ -15693,10 +17099,34 @@ const AvatarChatbot = ({
     }
   }, [ttsEnabled, isCurrentlyMinimized]);
   const allMessages = [...systemMessages, ...messages];
+  const flowNode = activeFlow ? flow_.currentNode : null;
+  const flowNodeActive = !!(flowNode && (flow_.currentInput || flow_.visibleOptions.length > 0));
+  const lastFlowPromptText = useMemo(() => {
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      if (allMessages[i] && allMessages[i].isFlowPrompt) return allMessages[i].content;
+    }
+    return "";
+  }, [allMessages]);
+  const flowQuestionText = flowNodeActive ? flow_.currentPrompt || lastFlowPromptText || "" : "";
+  const lastFlowPromptId = useMemo(() => {
+    if (!flowNodeActive) return null;
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      if (allMessages[i] && allMessages[i].isFlowPrompt) return allMessages[i].id;
+    }
+    return null;
+  }, [allMessages, flowNodeActive]);
+  const transcriptMessages = lastFlowPromptId != null ? allMessages.filter((m) => m.id !== lastFlowPromptId) : allMessages;
+  const flowNodeId2 = flowNode ? flowNode.id : null;
   useEffect(() => {
+    if (flowNodeActive) return;
     var _a2;
     (_a2 = messagesEndRef.current) == null ? void 0 : _a2.scrollIntoView({ behavior: "smooth" });
-  }, [allMessages]);
+  }, [allMessages, flowNodeActive]);
+  useEffect(() => {
+    if (!flowNodeActive) return;
+    var _a2;
+    (_a2 = flowQuestionRef.current) == null ? void 0 : _a2.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [flowNodeId2, flowNodeActive]);
   useEffect(() => {
     var _a2, _b2;
     if (!((_b2 = (_a2 = avatarRef == null ? void 0 : avatarRef.playerRef) == null ? void 0 : _a2.current) == null ? void 0 : _b2.animationController)) {
@@ -15762,6 +17192,7 @@ const AvatarChatbot = ({
       }
     }, 500);
     await sendMessage(message, {
+      ...buildFlowMetadata(),
       attachments: currentAttachments.map((a) => ({
         name: a.name,
         type: a.type,
@@ -15801,6 +17232,7 @@ const AvatarChatbot = ({
       }
     }, 500);
     await sendMessage(message, {
+      ...buildFlowMetadata(),
       attachments: currentAttachments.map((a) => ({
         name: a.name,
         type: a.type,
@@ -15833,6 +17265,295 @@ const AvatarChatbot = ({
       avatarRef.playerRef.current.animationController.setTalkSpeed(speed);
     }
   };
+  const flowInputElement = flowNodeActive && flow_.currentInput ? jsx("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px",
+      paddingTop: "2px"
+    },
+    children: jsxs("form", {
+      onSubmit: (e) => {
+        e.preventDefault();
+        handleFlowInputSubmit();
+      },
+      style: { display: "flex", flexDirection: "column", gap: "8px" },
+      children: [
+        // Visually-hidden label tied to the field (a11y).
+        jsx("label", {
+          htmlFor: "ania-flow-input",
+          style: {
+            position: "absolute",
+            width: "1px",
+            height: "1px",
+            padding: 0,
+            margin: "-1px",
+            overflow: "hidden",
+            clip: "rect(0,0,0,0)",
+            whiteSpace: "nowrap",
+            border: 0
+          },
+          children: flow_.currentInput.placeholder ? flow_.resolveText(flow_.currentInput.placeholder) : tr2.t("chat.flow.submit")
+        }),
+        flow_.currentInput.type === "textarea" ? jsx("textarea", {
+          id: "ania-flow-input",
+          name: flow_.currentInput.key || "ania-flow-input",
+          value: flowInputValue,
+          onChange: (e) => setFlowInputValue(e.target.value),
+          onKeyDown: (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleFlowInputSubmit();
+            }
+          },
+          rows: 3,
+          placeholder: flow_.currentInput.placeholder ? flow_.resolveText(flow_.currentInput.placeholder) : "",
+          autoComplete: flowInputAutocomplete(flow_.currentInput),
+          style: {
+            width: "100%",
+            minHeight: "44px",
+            padding: "12px 16px",
+            borderRadius: "16px",
+            border: flow_.inputError ? "2px solid #ef4444" : "2px solid #e5e7eb",
+            backgroundColor: flow_.inputError ? "#fef2f2" : "#ffffff",
+            fontSize: "16px",
+            color: "#1f2937",
+            outline: "none",
+            resize: "vertical",
+            boxSizing: "border-box",
+            fontFamily: "inherit",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.10)"
+          }
+        }) : jsx("input", {
+          id: "ania-flow-input",
+          name: flow_.currentInput.key || "ania-flow-input",
+          type: flowInputDomType(flow_.currentInput.type),
+          inputMode: flowInputMode(flow_.currentInput.type),
+          value: flowInputValue,
+          onChange: (e) => setFlowInputValue(e.target.value),
+          onKeyDown: (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleFlowInputSubmit();
+            }
+          },
+          placeholder: flow_.currentInput.placeholder ? flow_.resolveText(flow_.currentInput.placeholder) : "",
+          autoComplete: flowInputAutocomplete(flow_.currentInput),
+          style: {
+            width: "100%",
+            minHeight: "44px",
+            padding: "12px 16px",
+            borderRadius: "24px",
+            border: flow_.inputError ? "2px solid #ef4444" : "2px solid #e5e7eb",
+            backgroundColor: flow_.inputError ? "#fef2f2" : "#ffffff",
+            fontSize: "16px",
+            color: "#1f2937",
+            outline: "none",
+            boxSizing: "border-box",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.10)"
+          }
+        }),
+        // Inline validation error. flow_.inputError is ALREADY fully resolved by
+        // the engine (i18n key → text, then {var} interpolated from collected),
+        // so a flow errorMsg like "…tá estranho, {name}." shows the real name —
+        // render it directly (no extra tr.t / interpolation).
+        flow_.inputError && jsx("div", {
+          style: {
+            fontSize: "12px",
+            color: "#dc2626",
+            padding: "0 8px"
+          },
+          children: flow_.inputError
+        }),
+        // Submit + optional "Pular" (skip) row.
+        jsxs("div", {
+          style: { display: "flex", gap: "8px", flexWrap: "wrap" },
+          children: [
+            jsx("button", {
+              type: "submit",
+              className: "ania-flow-bubble",
+              style: {
+                flex: "1 1 auto",
+                minHeight: "44px",
+                padding: "11px 18px",
+                borderRadius: "20px",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: "600",
+                lineHeight: "1.2",
+                color: "#ffffff",
+                background: "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
+                boxShadow: "0 4px 14px rgba(59,130,246,0.35)",
+                WebkitTapHighlightColor: "transparent"
+              },
+              children: flow_.currentInput.submitLabel ? flow_.resolveText(flow_.currentInput.submitLabel) : tr2.t("chat.flow.submit")
+            }),
+            flow_.currentInput.optionalSkip && jsx("button", {
+              type: "button",
+              className: "ania-flow-bubble",
+              onClick: handleFlowInputSkip,
+              style: {
+                minHeight: "44px",
+                padding: "11px 18px",
+                borderRadius: "20px",
+                border: "2px solid #e5e7eb",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: "600",
+                lineHeight: "1.2",
+                color: "#6b7280",
+                backgroundColor: "#ffffff",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
+                WebkitTapHighlightColor: "transparent"
+              },
+              children: flow_.currentInput.skipLabel ? flow_.resolveText(flow_.currentInput.skipLabel) : flow_.resolveText(tr2.t("chat.flow.skip"))
+            })
+          ]
+        })
+      ]
+    })
+  }) : null;
+  const flowOptionsElement = flowNodeActive && !flow_.currentInput && flow_.visibleOptions.length > 0 ? jsx("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "8px",
+      justifyContent: "flex-start",
+      paddingTop: "2px"
+    },
+    children: [
+      ...flow_.visibleOptions.map((opt, idx) => {
+        const isEscalate = !!opt.escalate;
+        return jsx("button", {
+          key: "flowopt-" + (opt.value != null ? String(opt.value) : idx),
+          className: "ania-flow-bubble",
+          onClick: () => flow_.selectOption(opt),
+          style: {
+            flex: "0 1 auto",
+            maxWidth: "100%",
+            minHeight: "44px",
+            padding: "11px 18px",
+            borderRadius: "20px",
+            border: "none",
+            cursor: "pointer",
+            fontSize: "14px",
+            fontWeight: "600",
+            lineHeight: "1.25",
+            color: "#ffffff",
+            whiteSpace: "normal",
+            overflowWrap: "anywhere",
+            textAlign: "left",
+            background: isEscalate ? "linear-gradient(135deg, #f97316 0%, #ef4444 100%)" : "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
+            boxShadow: isEscalate ? "0 4px 14px rgba(249,115,22,0.40)" : "0 4px 14px rgba(59,130,246,0.35)",
+            animation: `ania-flow-pop .28s ease ${0.04 * idx}s both`,
+            WebkitTapHighlightColor: "transparent"
+          },
+          children: opt.label != null ? flow_.resolveLabel(opt.label) : isEscalate ? tr2.t("chat.flow.escalate") : String(opt.value)
+        });
+      }),
+      // "Voltar" bubble (only when there's history to pop)
+      flow_.canGoBack && jsx("button", {
+        key: "flow-back",
+        className: "ania-flow-bubble",
+        onClick: () => flow_.goBack(),
+        style: {
+          flex: "0 1 auto",
+          maxWidth: "100%",
+          minHeight: "44px",
+          padding: "11px 18px",
+          borderRadius: "20px",
+          border: "2px solid #e5e7eb",
+          cursor: "pointer",
+          fontSize: "14px",
+          fontWeight: "600",
+          lineHeight: "1.25",
+          color: "#6b7280",
+          whiteSpace: "normal",
+          overflowWrap: "anywhere",
+          backgroundColor: "#ffffff",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
+          animation: "ania-flow-pop .28s ease both",
+          WebkitTapHighlightColor: "transparent"
+        },
+        children: "← " + tr2.t("chat.flow.back")
+      })
+    ]
+  }) : null;
+  const flowInteractionRegion = flowNodeActive ? jsxs("div", {
+    style: {
+      flexShrink: 0,
+      display: "flex",
+      flexDirection: "column",
+      minHeight: 0,
+      // Cap the whole region so it + transcript + input bar fit small screens.
+      maxHeight: `min(55vh, max(180px, calc(100vh - ${height + 140}px)))`,
+      margin: "0 0 4px",
+      padding: "10px 12px 4px",
+      borderTop: "1px solid rgba(0,0,0,0.06)",
+      background: "linear-gradient(180deg, rgba(99,102,241,0.06) 0%, rgba(99,102,241,0) 100%)",
+      boxSizing: "border-box"
+    },
+    children: [
+      // PINNED QUESTION HEADER — prominent, bold, larger; never scrolled away.
+      jsxs("div", {
+        ref: flowQuestionRef,
+        style: {
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "flex-start",
+          gap: "8px",
+          padding: "12px 14px",
+          marginBottom: "8px",
+          borderRadius: "14px",
+          backgroundColor: "#ffffff",
+          boxShadow: "0 2px 8px rgba(15,23,42,0.14)"
+        },
+        children: [
+          jsx("div", {
+            "aria-hidden": "true",
+            style: {
+              flexShrink: 0,
+              marginTop: "2px",
+              width: "8px",
+              height: "8px",
+              borderRadius: "50%",
+              backgroundColor: "#6366f1",
+              boxShadow: "0 0 0 4px rgba(99,102,241,0.18)"
+            }
+          }),
+          jsx("div", {
+            role: "status",
+            "aria-live": "polite",
+            style: {
+              minWidth: 0,
+              flex: "1 1 auto",
+              fontSize: "clamp(15px, 4.2vw, 18px)",
+              fontWeight: "700",
+              lineHeight: "1.35",
+              color: "#111827",
+              overflowWrap: "anywhere",
+              wordBreak: "break-word"
+            },
+            children: flowQuestionText
+          })
+        ]
+      }),
+      // SCROLLABLE ANSWERS — options/input scroll here; the question stays put.
+      jsx("div", {
+        className: "ania-chat-scroll",
+        style: {
+          flex: "1 1 auto",
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: "hidden",
+          WebkitOverflowScrolling: "touch",
+          paddingRight: "2px"
+        },
+        children: flow_.currentInput ? flowInputElement : flowOptionsElement
+      })
+    ]
+  }) : null;
   return jsx(
     AniaAvatar,
     {
@@ -15886,68 +17607,83 @@ const AvatarChatbot = ({
         children: [
           // ========== ÁREA DE MENSAGENS ==========
           jsxs("div", {
+            className: "ania-chat-scroll",
             style: {
               flex: "1 1 auto",
               minHeight: "60px",
-              maxHeight: `max(120px, calc(100vh - ${height + 180}px))`,
+              // Growth cap only — when space is tight the flex parent (which is
+              // clamped to the viewport) shrinks this area, so the input bar is
+              // never pushed off screen. No viewport math needed here.
+              maxHeight: flowNodeActive ? "min(220px, 30vh)" : "min(420px, 48vh)",
               overflowY: "auto",
-              padding: "12px 16px",
-              WebkitOverflowScrolling: "touch"
+              padding: "14px 14px 6px",
+              WebkitOverflowScrolling: "touch",
+              overflowX: "hidden"
             },
             children: [
-              // Lista de mensagens
-              allMessages.map((msg) => {
+              // Lista de mensagens (transcript). The CURRENT flow question is
+              // pinned in its own header below, so it's filtered out here.
+              // Messages by the same sender are GROUPED: the name renders once
+              // per run and bubbles inside a run sit closer together.
+              transcriptMessages.map((msg, idx) => {
                 const isUser = msg.role === "user";
+                const prev = transcriptMessages[idx - 1];
+                const isFirstOfGroup = !prev || prev.role !== msg.role;
                 return jsx("div", {
                   key: msg.id,
+                  className: "ania-msg-in",
                   style: {
                     display: "flex",
                     justifyContent: isUser ? "flex-end" : "flex-start",
-                    marginBottom: "12px"
+                    marginTop: isFirstOfGroup && idx > 0 ? "14px" : "4px"
                   },
                   children: jsxs("div", {
-                    style: { maxWidth: "80%" },
+                    style: { maxWidth: "85%", minWidth: 0 },
                     children: [
-                      // Nome do remetente
-                      jsx("div", {
+                      // Nome do remetente — once per group, quiet label.
+                      isFirstOfGroup && jsx("div", {
                         style: {
                           fontSize: "11px",
                           fontWeight: "600",
-                          marginBottom: "4px",
-                          padding: "4px 12px",
-                          borderRadius: "20px",
+                          letterSpacing: "0.01em",
+                          marginBottom: "3px",
+                          padding: "2px 10px",
+                          borderRadius: "999px",
                           display: "inline-block",
-                          backgroundColor: isUser ? "#3b82f6" : "#ffffff",
-                          color: isUser ? "#ffffff" : "#374151",
-                          boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+                          backgroundColor: "rgba(255,255,255,0.92)",
+                          color: "#475569",
+                          float: isUser ? "right" : "none"
                         },
                         children: isUser ? userName : assistantName
                       }),
                       // Balão da mensagem
                       jsxs("div", {
                         style: {
-                          padding: "12px 18px",
-                          borderRadius: "20px",
-                          borderBottomLeftRadius: isUser ? "20px" : "6px",
-                          borderBottomRightRadius: isUser ? "6px" : "20px",
+                          clear: "both",
+                          padding: "11px 15px",
+                          borderRadius: "18px",
+                          borderBottomLeftRadius: isUser ? "18px" : "5px",
+                          borderBottomRightRadius: isUser ? "5px" : "18px",
                           fontSize: "14px",
                           lineHeight: "1.5",
-                          backgroundColor: isUser ? "#3b82f6" : "#ffffff",
+                          background: isUser ? "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)" : "#ffffff",
                           color: isUser ? "#ffffff" : "#1f2937",
-                          boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
+                          boxShadow: "0 2px 8px rgba(15,23,42,0.12)",
+                          overflowWrap: "anywhere",
+                          wordBreak: "break-word"
                         },
                         children: [
                           // Attachments
                           msg.attachments && msg.attachments.length > 0 && jsx("div", {
                             style: { marginBottom: "10px", display: "flex", flexWrap: "wrap", gap: "8px" },
                             children: msg.attachments.map(
-                              (att, idx) => att.type && att.type.startsWith("image/") ? jsx("img", {
-                                key: idx,
+                              (att, idx2) => att.type && att.type.startsWith("image/") ? jsx("img", {
+                                key: idx2,
                                 src: att.data || att.preview,
                                 alt: att.name,
                                 style: { maxWidth: "120px", maxHeight: "80px", borderRadius: "12px", objectFit: "cover" }
                               }) : jsx("span", {
-                                key: idx,
+                                key: idx2,
                                 style: {
                                   padding: "4px 10px",
                                   borderRadius: "12px",
@@ -15966,9 +17702,15 @@ const AvatarChatbot = ({
                   })
                 });
               }),
+              // NOTE: the flow QUESTION + answer affordances (option bubbles /
+              // typed input) are no longer rendered inside this scrollable
+              // transcript. They live in `flowInteractionRegion` below — a
+              // sibling that pins the current question at the top and lets only
+              // the answers scroll, so the question is never buried (v1.7.1).
               // Loading indicator
               isLoading && jsx("div", {
-                style: { display: "flex", justifyContent: "flex-start", marginBottom: "12px" },
+                className: "ania-msg-in",
+                style: { display: "flex", justifyContent: "flex-start", marginTop: "14px" },
                 children: jsxs("div", {
                   style: { maxWidth: "80%" },
                   children: [
@@ -15976,30 +17718,31 @@ const AvatarChatbot = ({
                       style: {
                         fontSize: "11px",
                         fontWeight: "600",
-                        marginBottom: "4px",
-                        padding: "4px 12px",
-                        borderRadius: "20px",
+                        letterSpacing: "0.01em",
+                        marginBottom: "3px",
+                        padding: "2px 10px",
+                        borderRadius: "999px",
                         display: "inline-block",
-                        backgroundColor: "#ffffff",
-                        color: "#374151",
-                        boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+                        backgroundColor: "rgba(255,255,255,0.92)",
+                        color: "#475569"
                       },
                       children: assistantName
                     }),
                     jsx("div", {
                       style: {
-                        padding: "12px 18px",
-                        borderRadius: "20px",
-                        borderBottomLeftRadius: "6px",
+                        padding: "13px 15px",
+                        borderRadius: "18px",
+                        borderBottomLeftRadius: "5px",
                         backgroundColor: "#ffffff",
-                        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                        boxShadow: "0 2px 8px rgba(15,23,42,0.12)",
                         display: "flex",
-                        gap: "6px"
+                        gap: "5px",
+                        width: "fit-content"
                       },
                       children: [
-                        jsx("div", { style: { width: "8px", height: "8px", borderRadius: "50%", backgroundColor: "#3b82f6", animation: "bounce 1s infinite" } }),
-                        jsx("div", { style: { width: "8px", height: "8px", borderRadius: "50%", backgroundColor: "#3b82f6", animation: "bounce 1s infinite 0.15s" } }),
-                        jsx("div", { style: { width: "8px", height: "8px", borderRadius: "50%", backgroundColor: "#3b82f6", animation: "bounce 1s infinite 0.3s" } })
+                        jsx("div", { style: { width: "7px", height: "7px", borderRadius: "50%", backgroundColor: "#6366f1", animation: "ania-pulse 1s infinite" } }),
+                        jsx("div", { style: { width: "7px", height: "7px", borderRadius: "50%", backgroundColor: "#6366f1", animation: "ania-pulse 1s infinite 0.18s" } }),
+                        jsx("div", { style: { width: "7px", height: "7px", borderRadius: "50%", backgroundColor: "#6366f1", animation: "ania-pulse 1s infinite 0.36s" } })
                       ]
                     })
                   ]
@@ -16008,6 +17751,10 @@ const AvatarChatbot = ({
               jsx("div", { ref: messagesEndRef })
             ]
           }),
+          // ========== FLOW: QUESTION PINNED + SCROLLABLE ANSWERS ==========
+          // Sibling below the transcript. Pins the current question at the top
+          // (prominent) and scrolls only the options/input below it (v1.7.1 fix).
+          flowInteractionRegion,
           // ========== BOTÃO ENABLE SOUND ==========
           enableTTS && !ttsEnabled && jsx("div", {
             style: { padding: "8px 16px", flexShrink: 0 },
@@ -16098,6 +17845,7 @@ const AvatarChatbot = ({
                   return (_a2 = fileInputRef.current) == null ? void 0 : _a2.click();
                 },
                 disabled: isLoading,
+                className: "ania-chat-iconbtn",
                 style: {
                   width: "44px",
                   height: "44px",
@@ -16111,13 +17859,16 @@ const AvatarChatbot = ({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
+                  boxShadow: "0 2px 8px rgba(15,23,42,0.14)"
                 },
                 children: jsx(Paperclip, { size: 18, color: "#6b7280" })
               }),
               enableAttachments && jsx("input", { ref: fileInputRef, type: "file", multiple: true, accept: "image/*,.pdf,.doc,.docx,.txt", onChange: handleFileSelect, style: { display: "none" } }),
               // Input de texto
               jsx("input", {
+                id: "ania-chat-input",
+                name: "ania-chat-input",
+                className: "ania-chat-input",
                 type: "text",
                 value: inputMessage,
                 onChange: (e) => setInputMessage(e.target.value),
@@ -16127,14 +17878,15 @@ const AvatarChatbot = ({
                 style: {
                   flex: "1 1 0%",
                   minWidth: 0,
-                  padding: "12px 16px",
-                  borderRadius: "24px",
-                  border: isListening ? "2px solid #ef4444" : "2px solid #e5e7eb",
+                  padding: "11px 16px",
+                  borderRadius: "999px",
+                  border: isListening ? "2px solid #ef4444" : "1.5px solid #e2e8f0",
                   backgroundColor: isListening ? "#fef2f2" : "#ffffff",
-                  fontSize: "14px",
+                  // 16px prevents iOS Safari from auto-zooming the page on focus.
+                  fontSize: "16px",
+                  fontFamily: "inherit",
                   color: "#1f2937",
                   outline: "none",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
                   boxSizing: "border-box"
                 }
               }),
@@ -16142,6 +17894,7 @@ const AvatarChatbot = ({
               enableSTT && jsx("button", {
                 onClick: handleMicToggle,
                 disabled: isLoading,
+                className: "ania-chat-iconbtn",
                 style: {
                   width: "44px",
                   height: "44px",
@@ -16155,7 +17908,7 @@ const AvatarChatbot = ({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: isListening ? "0 4px 12px rgba(239,68,68,0.4)" : "0 4px 12px rgba(0,0,0,0.15)"
+                  boxShadow: isListening ? "0 2px 8px rgba(239,68,68,0.45)" : "0 2px 8px rgba(15,23,42,0.14)"
                 },
                 children: isListening ? jsx(MicOff, { size: 18, color: "#ffffff" }) : jsx(Mic, { size: 18, color: "#6b7280" })
               }),
@@ -16163,6 +17916,7 @@ const AvatarChatbot = ({
               jsx("button", {
                 onClick: handleSend,
                 disabled: !inputMessage.trim() && attachments.length === 0 || isLoading,
+                className: "ania-chat-iconbtn",
                 style: {
                   width: "44px",
                   height: "44px",
@@ -16171,12 +17925,12 @@ const AvatarChatbot = ({
                   flexShrink: 0,
                   borderRadius: "50%",
                   border: "none",
-                  backgroundColor: !inputMessage.trim() && attachments.length === 0 || isLoading ? "#d1d5db" : "#3b82f6",
+                  background: !inputMessage.trim() && attachments.length === 0 || isLoading ? "#d1d5db" : "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
                   cursor: !inputMessage.trim() && attachments.length === 0 || isLoading ? "not-allowed" : "pointer",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: "0 4px 12px rgba(59,130,246,0.4)"
+                  boxShadow: "0 2px 8px rgba(59,130,246,0.35)"
                 },
                 children: jsx(Send, { size: 18, color: "#ffffff" })
               }),
@@ -16330,6 +18084,14 @@ export {
   disposePiper,
   executeCommand,
   fetchLipSyncConfig,
+  getNode as flowGetNode,
+  initialState as flowInitialState,
+  interpolate as flowInterpolate,
+  nodeInput as flowNodeInput,
+  flowReducer,
+  resolvePrompt as flowResolvePrompt,
+  validateInput as flowValidateInput,
+  visibleOptions as flowVisibleOptions,
   getCacheStats,
   getCachedAvatar,
   getDefaultRegistry,
@@ -16360,6 +18122,7 @@ export {
   useActionFrames,
   useAniaAvatarRef,
   useChatbot,
+  useFlowEngine,
   useLipSync,
   usePlugins,
   useSpeechRecognition,

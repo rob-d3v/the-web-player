@@ -750,19 +750,29 @@ export const AniaAvatar = ({
   const isMobileMinimized = isMobile && isMinimized;
 
   const getContainerStyle = () => {
+    // On a phone, an OPEN widget behaves like a bottom sheet: edge-to-edge
+    // (small inset) regardless of the configured corner, so the chat gets the
+    // full viewport width instead of a squeezed column pinned to one side.
+    const isMobileSheet = isMobile && !isMinimized && !!children;
     const baseStyle = {
       position: 'fixed',
       transition: 'all 0.3s ease',
+      // The widget must NOT inherit the host page's font (a serif host page
+      // makes the chat look broken). Own stack, own base color.
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
       ...(!(dragPosition && isMinimized) ? positionStyles[position] : {}),
+      ...(isMobileSheet ? { left: '8px', right: '8px', bottom: '8px', top: 'auto' } : {}),
       ...(isMobileMinimized ? {
         borderRadius: '9999px',
         overflow: 'hidden',
         boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1)'
       } : {}),
-      width: isMinimized ? `${currentWidth}px` : `min(${currentWidth}px, calc(100vw - 24px))`,
+      width: isMobileSheet
+        ? 'auto'
+        : (isMinimized ? `${currentWidth}px` : `min(${currentWidth}px, calc(100vw - 24px))`),
       height: children ? "auto" : `${currentHeight}px`,
       maxWidth: isMinimized ? undefined : "calc(100vw - 24px)",
-      maxHeight: isMobileMinimized ? "none" : "calc(100vh - 24px)",
+      maxHeight: isMobileMinimized ? "none" : (isMobileSheet ? "calc(100vh - 16px)" : "calc(100vh - 24px)"),
       pointerEvents: "auto",
       zIndex: alwaysOnTop ? 2147483647 : 9999,
       display: "flex",
@@ -900,7 +910,11 @@ export const AniaAvatar = ({
                 ref: containerRef,
                 style: {
                   width: isMobileMinimized ? `${currentWidth}px` : '100%',
-                  height: `${currentHeight}px`,
+                  // On a phone with the chat open, cap the avatar stage so the
+                  // conversation (not the canvas) owns the screen.
+                  height: (isMobile && !isMinimized && children)
+                    ? `min(${currentHeight}px, 34vh)`
+                    : `${currentHeight}px`,
                   maxWidth: "100%",
                   flexShrink: 0,
                   display: 'flex',

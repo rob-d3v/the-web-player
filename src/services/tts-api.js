@@ -1,3 +1,14 @@
+// Escape values before interpolating them into SSML/XML so that user
+// utterances or config strings containing <, >, &, ", ' cannot break out of
+// the markup (SSML-injection). Behavior-preserving for ordinary text.
+const escapeXml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
 export const professionalTTSRequest = async (text, provider, config) => {
   try {
     if (provider === "tiktok") {
@@ -63,6 +74,12 @@ export const professionalTTSRequest = async (text, provider, config) => {
       return { audioUrl, duration: 0 };
 
     } else if (provider === "google") {
+      // SECURITY: Google's REST API only accepts the key as a `?key=` query
+      // param, which can leak via browser history, Referer, and proxy logs.
+      // Supply a BROWSER-RESTRICTED, HTTP-referrer-locked key for `ttsApiKey`
+      // (restrict it to your origin in the Google Cloud console) so the
+      // exposed key cannot be reused elsewhere. Prefer routing through your
+      // own backend / `ttsApiUrl` proxy if you must keep the key off the wire.
       const apiUrl = config.ttsApiUrl || `https://texttospeech.googleapis.com/v1/text:synthesize?key=${config.ttsApiKey}`;
 
       const voiceConfig = {
@@ -119,10 +136,10 @@ export const professionalTTSRequest = async (text, provider, config) => {
 
       const voiceName = config.ttsVoiceId || 'pt-BR-AntonioNeural';
 
-      const ssml = `<speak version='1.0' xml:lang='${config.ttsLang || 'pt-BR'}'>
-        <voice name='${voiceName}'>
+      const ssml = `<speak version='1.0' xml:lang='${escapeXml(config.ttsLang || 'pt-BR')}'>
+        <voice name='${escapeXml(voiceName)}'>
           <prosody rate='${config.ttsRate || 1.0}' pitch='${(config.ttsPitch - 1) * 50}%'>
-            ${text}
+            ${escapeXml(text)}
           </prosody>
         </voice>
       </speak>`;

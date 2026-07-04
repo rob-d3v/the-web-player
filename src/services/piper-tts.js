@@ -37,12 +37,29 @@ const ensureDeps = () => {
     OnnxWebRuntime = piperMod.OnnxWebRuntime;
     OnnxWebWorkerRuntime = piperMod.OnnxWebWorkerRuntime;
     FetchProvider = piperMod.FetchProvider;
-    // Disable ONNX proxy worker (clashes with piper's own worker protocol) and
-    // force single-thread WASM (no SAB / COOP-COEP requirement).
+    // Disable ONNX proxy worker (clashes with piper's own worker protocol).
     ort.env.wasm.proxy = false;
-    ort.env.wasm.numThreads = 1;
+    // Multi-thread WASM needs SharedArrayBuffer, which requires the page to be
+    // cross-origin isolated (COOP/COEP headers). When it is, using real threads
+    // cuts synthesis time roughly linearly; otherwise stay single-thread (no
+    // SAB requirement, works everywhere).
+    ort.env.wasm.numThreads = wasmThreadCount();
   })();
   return depsPromise;
+};
+
+// How many WASM threads the current page can actually use. >1 only when the
+// page is crossOriginIsolated (SharedArrayBuffer available); capped at 4 —
+// ONNX inference for these small models stops scaling beyond that and extra
+// threads just burn battery on mobile.
+const wasmThreadCount = () => {
+  try {
+    if (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated) {
+      const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 2;
+      return Math.max(1, Math.min(4, cores - 1));
+    }
+  } catch (e) { /* fall through to single-thread */ }
+  return 1;
 };
 
 let engine = null;
@@ -89,10 +106,11 @@ const buildVoiceProvider = (modelUrl, modelConfigUrl, options) => {
 };
 
 const buildEngine = (voiceProvider) => {
+  const numThreads = wasmThreadCount();
   if (useWorkerRuntime) {
     try {
       return new PiperWebEngine({
-        onnxRuntime: new OnnxWebWorkerRuntime({ numThreads: 1 }),
+        onnxRuntime: new OnnxWebWorkerRuntime({ numThreads }),
         voiceProvider,
       });
     } catch (err) {
@@ -101,9 +119,36 @@ const buildEngine = (voiceProvider) => {
     }
   }
   return new PiperWebEngine({
-    onnxRuntime: new OnnxWebRuntime({ numThreads: 1 }),
+    onnxRuntime: new OnnxWebRuntime({ numThreads }),
     voiceProvider,
   });
+};
+
+// ---- Synthesis cache ------------------------------------------------------
+// Piper output is deterministic for (text, voice, speaker), so re-speaking the
+// same sentence (greetings, flow prompts, repeated answers) should never pay
+// inference twice. Small LRU of raw blobs; each hit mints a FRESH objectURL so
+// callers keep their revoke-after-play lifecycle unchanged.
+const SYNTH_CACHE_MAX = 24;
+const synthCache = new Map(); // key -> Blob (Map preserves insertion order = LRU)
+
+const cacheGet = (key) => {
+  const blob = synthCache.get(key);
+  if (blob) {
+    // Refresh recency.
+    synthCache.delete(key);
+    synthCache.set(key, blob);
+  }
+  return blob || null;
+};
+
+const cachePut = (key, blob) => {
+  if (synthCache.has(key)) synthCache.delete(key);
+  synthCache.set(key, blob);
+  while (synthCache.size > SYNTH_CACHE_MAX) {
+    const oldest = synthCache.keys().next().value;
+    synthCache.delete(oldest);
+  }
 };
 
 /**
@@ -208,8 +253,16 @@ export const piperSynthesize = async (text, options = {}) => {
 
   try {
     const speakerId = options.speakerId ?? 0;
+    const cacheKey = `${currentVoiceName}|${speakerId}|${text}`;
+
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      return { audioUrl: URL.createObjectURL(cached), blob: cached, cached: true };
+    }
+
     const response = await engine.generate(text, currentVoiceName, speakerId);
     const blob = response.file;
+    cachePut(cacheKey, blob);
     const audioUrl = URL.createObjectURL(blob);
     return { audioUrl, blob };
   } catch (err) {

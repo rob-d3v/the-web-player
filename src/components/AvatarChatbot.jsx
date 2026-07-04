@@ -7,6 +7,7 @@ import { createTranslator } from '../i18n/index.js';
 import { useTTSDetection } from '../hooks/useTTSDetection.js';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition.js';
 import { useChatbot } from '../hooks/useChatbot.js';
+import { useFlowEngine } from '../hooks/useFlowEngine.js';
 import { useLipSync } from '../hooks/useLipSync.js';
 import { useActionFrames } from '../hooks/useActionFrames.js';
 import { usePlugins } from '../hooks/usePlugins.js';
@@ -21,6 +22,42 @@ const EMPTY_PLUGINS = [];
 // Stable empty-array identity so `actions || EMPTY_ACTIONS` doesn't hand
 // useActionFrames a new array every render (which would loop its effect).
 const EMPTY_ACTIONS = [];
+
+// ── Flow INPUT-node field helpers ──────────────────────────────────────────
+// Map a flow `input.type` to the right DOM <input type>, virtual-keyboard hint
+// (inputMode), and autocomplete token so mobile keyboards + browser autofill
+// behave for lead-gen fields (name / tel / email). `textarea` is handled by the
+// component (renders a <textarea>), so these only cover the <input> path.
+function flowInputDomType(type) {
+  switch (type) {
+    case 'email': return 'email';
+    case 'tel': return 'tel';
+    case 'number': return 'number';
+    default: return 'text';
+  }
+}
+function flowInputMode(type) {
+  switch (type) {
+    case 'email': return 'email';
+    case 'tel': return 'tel';
+    case 'number': return 'numeric';
+    default: return 'text';
+  }
+}
+function flowInputAutocomplete(input) {
+  if (!input) return 'off';
+  // Prefer an explicit hint keyed off type; fall back to a name-like key heuristic.
+  switch (input.type) {
+    case 'email': return 'email';
+    case 'tel': return 'tel';
+    default: break;
+  }
+  const key = String(input.key || '').toLowerCase();
+  if (/mail/.test(key)) return 'email';
+  if (/phone|whats|tel|cel|fone/.test(key)) return 'tel';
+  if (/name|nome/.test(key)) return 'name';
+  return 'on';
+}
 
 export const AvatarChatbot = ({
   avatarUrl,
@@ -57,6 +94,21 @@ export const AvatarChatbot = ({
   ttsApiUrl = null,
   ttsVoiceId = null,
   ttsModel = null,
+  // ---- Streaming / chunked TTS ----
+  // When true (default), a long reply is split at sentence boundaries and
+  // spoken sentence-by-sentence through a queue: the first sentence starts
+  // fast and the next is synthesized while the current one plays. Set false to
+  // fall back to one-shot whole-text synthesis (legacy behavior).
+  ttsChunking = true,
+  // Pause inserted between spoken chunks, in milliseconds. The audio already
+  // carries each sentence's trailing silence, so this is just a short breath.
+  chunkGapMs = 250,
+  // Optional: hard-wrap chunks longer than this many chars (0 = off) so a
+  // comma-spliced run-on still streams.
+  maxChunkChars = 0,
+  // Cap ONLY the first spoken chunk (chars) so the very first synthesis is
+  // short and speech starts fast; the rest streams behind it (0 = off).
+  firstChunkMaxChars = 100,
   enableSTT = false,
   sttProvider = "browser",
   sttLang = "pt-BR",
@@ -125,6 +177,31 @@ export const AvatarChatbot = ({
   // ---- External control (postMessage) ----
   enablePostMessageControl = false,
   postMessageOrigins = null,
+  // ---- NO-AI bubble/balloon flow engine ----
+  // A deterministic decision-tree flow. When set, the avatar speaks each node's
+  // prompt and the user answers by tapping clickable bubbles (no LLM until an
+  // explicit escalation). Omit it and behavior is identical to today.
+  flow = null,
+  // Optional URL to fetch a flow JSON from (ignored when `flow` is supplied).
+  flowUrl = null,
+  // Opaque app/tenant id forwarded to capture/escalation callbacks (for CRM).
+  appId = null,
+  // Fired on every captured answer: ({ sessionId, appId, key, value, collected }).
+  onFlowCapture = null,
+  // Fired when the flow escalates: ({ collected, contact, sessionId, transcript }).
+  // Defaults to forwarding an escalation message to the webhook (sendMessage).
+  onFlowEscalate = null,
+  // Known-user fields pre-seeded into the flow's `collected` (e.g. { name, email }
+  // from the host app's auth/session) so the chat already knows a signed-in user.
+  initialContext = null,
+  // Persist { sessionId, collected, currentNodeId } to localStorage so a
+  // returning visitor in the same browser is remembered (default true).
+  persist = true,
+  // Override the localStorage key (default `ania-flow-<appId|flowId>`).
+  persistKey = null,
+  // A `collected` key gating persistence (LGPD): nothing is written until
+  // `collected[consentKey]` is truthy. Unset = host owns its own consent gating.
+  flowConsentKey = null,
   onClose
 }) => {
   // i18n translator (memoised on locale + override). `tr.t(key, vars)` for
@@ -133,6 +210,41 @@ export const AvatarChatbot = ({
     () => createTranslator(locale, messagesOverride || undefined),
     [locale, messagesOverride]
   );
+
+  // Inject the flow-bubble appear animation + hover/lift keyframes once. Mirrors
+  // AniaAvatar's keyframe-injection pattern (no runtime CSS dependency).
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const id = 'ania-flow-keyframes';
+    if (document.getElementById(id)) return;
+    const style = document.createElement('style');
+    style.id = id;
+    style.textContent =
+      '@keyframes ania-flow-pop{0%{opacity:0;transform:translateY(8px) scale(0.96);}100%{opacity:1;transform:translateY(0) scale(1);}}' +
+      '.ania-flow-bubble{transition:transform .15s ease,box-shadow .15s ease,filter .15s ease;}' +
+      '.ania-flow-bubble:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,0.22);filter:brightness(1.04);}' +
+      '.ania-flow-bubble:active{transform:translateY(0) scale(0.98);}' +
+      // Message entrance: small rise + fade, once, per bubble.
+      '@keyframes ania-msg-in{0%{opacity:0;transform:translateY(6px);}100%{opacity:1;transform:translateY(0);}}' +
+      '.ania-msg-in{animation:ania-msg-in .22s cubic-bezier(0.22,1,0.36,1) both;}' +
+      // Transcript scrollbar: thin + quiet, never a gray slab.
+      '.ania-chat-scroll{scrollbar-width:thin;scrollbar-color:rgba(100,116,139,0.35) transparent;overscroll-behavior:contain;}' +
+      '.ania-chat-scroll::-webkit-scrollbar{width:6px;}' +
+      '.ania-chat-scroll::-webkit-scrollbar-track{background:transparent;}' +
+      '.ania-chat-scroll::-webkit-scrollbar-thumb{background:rgba(100,116,139,0.35);border-radius:999px;}' +
+      // Text input focus ring (inline styles cannot express :focus).
+      '.ania-chat-input{transition:border-color .15s ease,box-shadow .15s ease;}' +
+      '.ania-chat-input:focus{border-color:#6366f1 !important;box-shadow:0 0 0 3px rgba(99,102,241,0.18) !important;}' +
+      // Round icon buttons: gentle press/hover feedback.
+      '.ania-chat-iconbtn{transition:transform .12s ease,box-shadow .12s ease,background-color .12s ease;}' +
+      '.ania-chat-iconbtn:not(:disabled):hover{transform:translateY(-1px);}' +
+      '.ania-chat-iconbtn:not(:disabled):active{transform:scale(0.94);}' +
+      '@media (prefers-reduced-motion: reduce){' +
+        '.ania-msg-in,.ania-flow-bubble{animation:none !important;}' +
+        '.ania-flow-bubble,.ania-chat-iconbtn{transition:none !important;}' +
+      '}';
+    document.head.appendChild(style);
+  }, []);
 
   const [inputMessage, setInputMessage] = useState("");
   const [avatarRef, setAvatarRef] = useState(null);
@@ -143,7 +255,15 @@ export const AvatarChatbot = ({
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [isCurrentlyMinimized, setIsCurrentlyMinimized] = useState(startMinimized);
   const [attachments, setAttachments] = useState([]);
+  // Typed value for the current flow INPUT node (free-text lead capture).
+  const [flowInputValue, setFlowInputValue] = useState("");
+  // Flow definition: the `flow` prop wins; otherwise lazily fetched from flowUrl.
+  const [fetchedFlow, setFetchedFlow] = useState(null);
   const messagesEndRef = useRef(null);
+  // Ref to the PINNED flow-question header. When a new flow node enters we scroll
+  // THIS to the top of the viewport (block:'start') so the question reads first,
+  // instead of scrolling to the bottom (which buried the question under options).
+  const flowQuestionRef = useRef(null);
   const hasGreetedRef = useRef(false);
   const speakRef = useRef(null);
   const greetingPendingRef = useRef(null);
@@ -155,6 +275,7 @@ export const AvatarChatbot = ({
   const speakFnRef = useRef(null);
   const cancelTtsRef = useRef(null);
   const sendMessageRef = useRef(null);
+  const flowGotoRef = useRef(null);
 
   // ---- Plugin registry ----
   // Built-ins are always registered; the legacy ttsProvider/sttProvider props
@@ -202,6 +323,13 @@ export const AvatarChatbot = ({
     return () => window.clearTimeout(id);
   }, [piperPreload, ensurePiperPreload]);
 
+  // Holds the live lipSync.connectAudioElement so the per-chunk audio callback
+  // (fired from inside useTTSDetection, which is declared BEFORE lipSync) can
+  // reconnect the analyser to each streamed chunk's <audio> element. Each TTS
+  // chunk is a fresh Audio() and createMediaElementSource can only run once
+  // per element, so we MUST reconnect per chunk for the mouth to track it.
+  const lipSyncConnectRef = useRef(null);
+
   const { isTalking, speak, cancel, audioRef: ttsAudioRef } = useTTSDetection({
     pauseThreshold: 350,
     idleTransitionDelay: postTalkDelay,
@@ -211,6 +339,15 @@ export const AvatarChatbot = ({
     onTalkStart: () => {},
     onTalkEnd: () => {},
     ttsProvider: ttsProvider,
+    ttsChunking: ttsChunking,
+    chunkGapMs: chunkGapMs,
+    maxChunkChars: maxChunkChars,
+    firstChunkMaxChars: firstChunkMaxChars,
+    onChunkAudio: (audioEl) => {
+      if (lipSyncEnabled && lipSyncConnectRef.current && audioEl) {
+        lipSyncConnectRef.current(audioEl);
+      }
+    },
     ttsConfig: {
       ttsApiKey,
       ttsApiUrl,
@@ -230,7 +367,12 @@ export const AvatarChatbot = ({
   // Lip sync hook — Web Audio FFT analysis
   const lipSync = useLipSync({ enabled: lipSyncEnabled && ttsProvider !== 'browser' });
 
-  // Connect TTS audio to lip sync when it plays
+  // Keep the per-chunk reconnect ref pointed at the current connect fn.
+  useEffect(() => {
+    lipSyncConnectRef.current = lipSync.connectAudioElement;
+  }, [lipSync.connectAudioElement]);
+
+  // Connect TTS audio to lip sync when it plays (first chunk / non-chunked).
   useEffect(() => {
     if (!lipSyncEnabled || !ttsAudioRef?.current) return;
     lipSync.connectAudioElement(ttsAudioRef.current);
@@ -440,6 +582,8 @@ export const AvatarChatbot = ({
     webhookApiKey,
     webhookHeaders,
     availableActions,
+    // Localize the friendly fallback copy (chat.error.generic) shown on failure.
+    translate: tr.t,
     onActionTriggered: (actionId) => {
       if (triggerActionFrame) triggerActionFrame(actionId);
     },
@@ -471,6 +615,105 @@ export const AvatarChatbot = ({
     sendMessageRef.current = sendMessage;
   }, [sendMessage]);
 
+  // ---- NO-AI flow engine ----
+  // Lazily fetch the flow JSON when only `flowUrl` is given (the `flow` object
+  // prop always wins). Fire-and-forget; never blocks render.
+  useEffect(() => {
+    if (flow || !flowUrl || typeof fetch === 'undefined') return;
+    let cancelled = false;
+    fetch(flowUrl)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((def) => { if (!cancelled) setFetchedFlow(def); })
+      .catch((err) => console.warn('[AvatarChatbot] flowUrl fetch failed:', err));
+    return () => { cancelled = true; };
+  }, [flow, flowUrl]);
+
+  const activeFlow = flow || fetchedFlow;
+
+  // Speak helper bound to the chatbot's TTS settings, reused by the flow engine.
+  const flowSpeak = useCallback((text, opts) => {
+    if (!enableTTS || !ttsEnabled || !speakFnRef.current || !text) return;
+    speakFnRef.current(text, {
+      lang: ttsLang, rate: ttsRate, pitch: ttsPitch, voice: selectVoice(),
+      cancelPrevious: true, ...opts
+    });
+  }, [enableTTS, ttsEnabled, ttsLang, ttsRate, ttsPitch, selectVoice]);
+
+  const flow_ = useFlowEngine(activeFlow, {
+    speak: flowSpeak,
+    sendMessage: (text, meta) => { if (sendMessageRef.current) sendMessageRef.current(text, meta); },
+    locale,
+    messagesOverride,
+    appId,
+    lang: ttsLang,
+    translate: tr.t,
+    initialContext: initialContext || undefined,
+    persist,
+    persistKey: persistKey || undefined,
+    consentKey: flowConsentKey || undefined,
+    onCapture: onFlowCapture || undefined,
+    onEscalate: onFlowEscalate || undefined,
+    // Append each entered node's (resolved) prompt to the visible transcript so
+    // the chat shows the running conversation, not just the current bubbles.
+    onPrompt: (text) => {
+      if (!text) return;
+      setSystemMessages((prev) => [
+        ...prev,
+        {
+          id: "flow-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+          role: "assistant",
+          content: text,
+          timestamp: (new Date()).toISOString(),
+          isFlowPrompt: true,
+        },
+      ]);
+    },
+  });
+
+  // Expose the flow's goto() to the command runner (the `flow <nodeId>` verb).
+  useEffect(() => {
+    flowGotoRef.current = flow_.goto;
+  }, [flow_.goto]);
+
+  // Reset the typed-input field whenever the flow advances to a different node
+  // (so a captured/skipped value doesn't bleed into the next input node).
+  const flowNodeId = flow_.currentNode ? flow_.currentNode.id : null;
+  useEffect(() => {
+    setFlowInputValue("");
+  }, [flowNodeId]);
+
+  // Submit the current flow INPUT node's typed value. The avatar already SPOKE
+  // the prompt (TTS); the typed answer is silent and goes only into the flow's
+  // `collected` map. On success we clear the field; on failure inputError shows
+  // inline and we keep the value so the user can fix it.
+  const handleFlowInputSubmit = useCallback(() => {
+    if (!flow_.currentInput) return;
+    const res = flow_.submitInput(flowInputValue);
+    if (res && res.ok) setFlowInputValue("");
+  }, [flow_, flowInputValue]);
+
+  // Advance past an optional input node WITHOUT capturing (the "Pular" bubble).
+  const handleFlowInputSkip = useCallback(() => {
+    const input = flow_.currentInput;
+    if (!input || !input.optionalSkip) return;
+    setFlowInputValue("");
+    if (input.next != null) flow_.goto(input.next);
+  }, [flow_]);
+
+  // When a flow is active, typed free-text must carry the SAME rich context the
+  // escalate button sends (sessionId, appId, collected) so the AI keeps the
+  // conversation after escalation — otherwise free-text dropped the flow state.
+  // Returns {} when no flow is active so non-flow usage is unchanged.
+  const buildFlowMetadata = useCallback(() => {
+    if (!activeFlow) return {};
+    return {
+      sessionId: flow_.sessionId,
+      appId: appId,
+      collected: flow_.collected,
+      flowId: activeFlow.id,
+    };
+  }, [activeFlow, flow_.sessionId, flow_.collected, appId]);
+
   // ---- Command context (drives executeCommand / postMessage control) ----
   const buildCommandCtx = useCallback(() => ({
     player: avatarRef?.playerRef?.current || null,
@@ -494,6 +737,7 @@ export const AvatarChatbot = ({
     ask: (text) => { if (sendMessageRef.current) sendMessageRef.current(text); },
     stopSpeaking: () => { if (cancelTtsRef.current) cancelTtsRef.current(); },
     triggerWake: () => { if (onWake) onWake(); else if (wakeTriggerRef.current) wakeTriggerRef.current(); },
+    flowGoto: (nodeId) => { if (flowGotoRef.current) flowGotoRef.current(nodeId); },
     logger: console,
   }), [avatarRef, availableActions, triggerActionFrame, cancelActionFrame, isCurrentlyMinimized, ttsLang, ttsRate, ttsPitch, selectVoice, onWake]);
 
@@ -535,6 +779,12 @@ export const AvatarChatbot = ({
 
   useEffect(() => {
     if (!autoGreeting || hasGreetedRef.current || !isAvatarLoaded) return;
+    // When a flow is active, ITS start-node prompt is the greeting (spoken AND
+    // shown via onPrompt) — skip the generic greeting so we don't double-speak.
+    if (activeFlow) {
+      hasGreetedRef.current = true;
+      return;
+    }
 
     const greetings = tr.list("greetings");
     const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
@@ -553,7 +803,7 @@ export const AvatarChatbot = ({
     return () => {
       clearTimeout(timer);
     };
-  }, [autoGreeting, isAvatarLoaded]);
+  }, [autoGreeting, isAvatarLoaded, activeFlow]);
 
   useEffect(() => {
     if (ttsEnabled && greetingPendingRef.current && speakRef.current && !isCurrentlyMinimized) {
@@ -573,10 +823,64 @@ export const AvatarChatbot = ({
 
   const allMessages = [...systemMessages, ...messages];
 
+  // ---- Active flow-node detection (drives question-pinning + scroll mode) ----
+  // A flow "interaction" is live when a flow is active AND the current node has
+  // either clickable options or a typed-input spec. While it's live we PIN the
+  // current question at the top of the interaction area and let only the options
+  // scroll — so the question is never buried (operator's bug on housestudio.online).
+  const flowNode = activeFlow ? flow_.currentNode : null;
+  const flowNodeActive = !!(
+    flowNode && (flow_.currentInput || flow_.visibleOptions.length > 0)
+  );
+
+  // The current question text to pin. Prefer the flow's resolved+interpolated
+  // prompt; fall back to the last spoken flow-prompt in the transcript so a
+  // node whose prompt was only surfaced via onPrompt still shows a header.
+  const lastFlowPromptText = useMemo(() => {
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      if (allMessages[i] && allMessages[i].isFlowPrompt) return allMessages[i].content;
+    }
+    return "";
+  }, [allMessages]);
+  const flowQuestionText = flowNodeActive
+    ? (flow_.currentPrompt || lastFlowPromptText || "")
+    : "";
+
+  // When the question is pinned above the options we must NOT also repeat it as
+  // the last transcript bubble (it would read twice). Hide ONLY the most-recent
+  // flow-prompt message from the scrollable history while it's pinned; earlier
+  // prompts (past Q&A) stay in the transcript so history remains readable.
+  const lastFlowPromptId = useMemo(() => {
+    if (!flowNodeActive) return null;
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      if (allMessages[i] && allMessages[i].isFlowPrompt) return allMessages[i].id;
+    }
+    return null;
+  }, [allMessages, flowNodeActive]);
+  const transcriptMessages = lastFlowPromptId != null
+    ? allMessages.filter((m) => m.id !== lastFlowPromptId)
+    : allMessages;
+
+  // ---- Scroll behavior ----
+  // FREE-TEXT AI chat (no live flow node): scroll to the bottom so the latest
+  // reply is in view — the original, correct behavior.
+  // LIVE FLOW node: do NOT scroll to the bottom (that buried the question under
+  // the options). Instead scroll the PINNED question to the TOP of the view so
+  // the user reads the question first, then scrolls down to the options.
+  const flowNodeId2 = flowNode ? flowNode.id : null;
   useEffect(() => {
+    if (flowNodeActive) return; // handled by the question-pinning effect below
     var _a;
     (_a = messagesEndRef.current) == null ? void 0 : _a.scrollIntoView({ behavior: "smooth" });
-  }, [allMessages]);
+  }, [allMessages, flowNodeActive]);
+
+  // On each NEW live flow node, bring the pinned question to the TOP of the
+  // visible area (block:'start') instead of scrolling past it to the options.
+  useEffect(() => {
+    if (!flowNodeActive) return;
+    var _a;
+    (_a = flowQuestionRef.current) == null ? void 0 : _a.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [flowNodeId2, flowNodeActive]);
 
   useEffect(() => {
     var _a, _b;
@@ -650,6 +954,7 @@ export const AvatarChatbot = ({
     }, 500);
 
     await sendMessage(message, {
+      ...buildFlowMetadata(),
       attachments: currentAttachments.map(a => ({
         name: a.name,
         type: a.type,
@@ -692,6 +997,7 @@ export const AvatarChatbot = ({
     }, 500);
 
     await sendMessage(message, {
+      ...buildFlowMetadata(),
       attachments: currentAttachments.map(a => ({
         name: a.name,
         type: a.type,
@@ -727,6 +1033,326 @@ export const AvatarChatbot = ({
       avatarRef.playerRef.current.animationController.setTalkSpeed(speed);
     }
   };
+
+  // ── Flow INPUT-node element (typed lead-capture field + submit/skip) ────────
+  // Built once here so the new flow-interaction region (pinned question above,
+  // scrollable answers below) can render it under the pinned question. Gating
+  // (currentInput present) is done by the region, not here.
+  const flowInputElement = (flowNodeActive && flow_.currentInput) ? jsx("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px",
+      paddingTop: "2px"
+    },
+    children: jsxs("form", {
+      onSubmit: (e) => { e.preventDefault(); handleFlowInputSubmit(); },
+      style: { display: "flex", flexDirection: "column", gap: "8px" },
+      children: [
+        // Visually-hidden label tied to the field (a11y).
+        jsx("label", {
+          htmlFor: "ania-flow-input",
+          style: {
+            position: "absolute",
+            width: "1px",
+            height: "1px",
+            padding: 0,
+            margin: "-1px",
+            overflow: "hidden",
+            clip: "rect(0,0,0,0)",
+            whiteSpace: "nowrap",
+            border: 0
+          },
+          children: flow_.currentInput.placeholder
+            ? flow_.resolveText(flow_.currentInput.placeholder)
+            : tr.t("chat.flow.submit")
+        }),
+        (flow_.currentInput.type === "textarea"
+          ? jsx("textarea", {
+              id: "ania-flow-input",
+              name: flow_.currentInput.key || "ania-flow-input",
+              value: flowInputValue,
+              onChange: (e) => setFlowInputValue(e.target.value),
+              onKeyDown: (e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleFlowInputSubmit();
+                }
+              },
+              rows: 3,
+              placeholder: flow_.currentInput.placeholder
+                ? flow_.resolveText(flow_.currentInput.placeholder)
+                : "",
+              autoComplete: flowInputAutocomplete(flow_.currentInput),
+              style: {
+                width: "100%",
+                minHeight: "44px",
+                padding: "12px 16px",
+                borderRadius: "16px",
+                border: flow_.inputError ? "2px solid #ef4444" : "2px solid #e5e7eb",
+                backgroundColor: flow_.inputError ? "#fef2f2" : "#ffffff",
+                fontSize: "16px",
+                color: "#1f2937",
+                outline: "none",
+                resize: "vertical",
+                boxSizing: "border-box",
+                fontFamily: "inherit",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.10)"
+              }
+            })
+          : jsx("input", {
+              id: "ania-flow-input",
+              name: flow_.currentInput.key || "ania-flow-input",
+              type: flowInputDomType(flow_.currentInput.type),
+              inputMode: flowInputMode(flow_.currentInput.type),
+              value: flowInputValue,
+              onChange: (e) => setFlowInputValue(e.target.value),
+              onKeyDown: (e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleFlowInputSubmit();
+                }
+              },
+              placeholder: flow_.currentInput.placeholder
+                ? flow_.resolveText(flow_.currentInput.placeholder)
+                : "",
+              autoComplete: flowInputAutocomplete(flow_.currentInput),
+              style: {
+                width: "100%",
+                minHeight: "44px",
+                padding: "12px 16px",
+                borderRadius: "24px",
+                border: flow_.inputError ? "2px solid #ef4444" : "2px solid #e5e7eb",
+                backgroundColor: flow_.inputError ? "#fef2f2" : "#ffffff",
+                fontSize: "16px",
+                color: "#1f2937",
+                outline: "none",
+                boxSizing: "border-box",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.10)"
+              }
+            })
+        ),
+        // Inline validation error. flow_.inputError is ALREADY fully resolved by
+        // the engine (i18n key → text, then {var} interpolated from collected),
+        // so a flow errorMsg like "…tá estranho, {name}." shows the real name —
+        // render it directly (no extra tr.t / interpolation).
+        flow_.inputError && jsx("div", {
+          style: {
+            fontSize: "12px",
+            color: "#dc2626",
+            padding: "0 8px"
+          },
+          children: flow_.inputError
+        }),
+        // Submit + optional "Pular" (skip) row.
+        jsxs("div", {
+          style: { display: "flex", gap: "8px", flexWrap: "wrap" },
+          children: [
+            jsx("button", {
+              type: "submit",
+              className: "ania-flow-bubble",
+              style: {
+                flex: "1 1 auto",
+                minHeight: "44px",
+                padding: "11px 18px",
+                borderRadius: "20px",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: "600",
+                lineHeight: "1.2",
+                color: "#ffffff",
+                background: "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
+                boxShadow: "0 4px 14px rgba(59,130,246,0.35)",
+                WebkitTapHighlightColor: "transparent"
+              },
+              children: flow_.currentInput.submitLabel
+                ? flow_.resolveText(flow_.currentInput.submitLabel)
+                : tr.t("chat.flow.submit")
+            }),
+            flow_.currentInput.optionalSkip && jsx("button", {
+              type: "button",
+              className: "ania-flow-bubble",
+              onClick: handleFlowInputSkip,
+              style: {
+                minHeight: "44px",
+                padding: "11px 18px",
+                borderRadius: "20px",
+                border: "2px solid #e5e7eb",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: "600",
+                lineHeight: "1.2",
+                color: "#6b7280",
+                backgroundColor: "#ffffff",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
+                WebkitTapHighlightColor: "transparent"
+              },
+              children: flow_.currentInput.skipLabel
+                ? flow_.resolveText(flow_.currentInput.skipLabel)
+                : flow_.resolveText(tr.t("chat.flow.skip"))
+            })
+          ]
+        })
+      ]
+    })
+  }) : null;
+
+  // ── Flow OPTION bubbles element (clickable answers + "Voltar") ──────────────
+  const flowOptionsElement = (flowNodeActive && !flow_.currentInput && flow_.visibleOptions.length > 0) ? jsx("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "8px",
+      justifyContent: "flex-start",
+      paddingTop: "2px"
+    },
+    children: [
+      ...flow_.visibleOptions.map((opt, idx) => {
+        const isEscalate = !!opt.escalate;
+        return jsx("button", {
+          key: "flowopt-" + (opt.value != null ? String(opt.value) : idx),
+          className: "ania-flow-bubble",
+          onClick: () => flow_.selectOption(opt),
+          style: {
+            flex: "0 1 auto",
+            maxWidth: "100%",
+            minHeight: "44px",
+            padding: "11px 18px",
+            borderRadius: "20px",
+            border: "none",
+            cursor: "pointer",
+            fontSize: "14px",
+            fontWeight: "600",
+            lineHeight: "1.25",
+            color: "#ffffff",
+            whiteSpace: "normal",
+            overflowWrap: "anywhere",
+            textAlign: "left",
+            background: isEscalate
+              ? "linear-gradient(135deg, #f97316 0%, #ef4444 100%)"
+              : "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
+            boxShadow: isEscalate
+              ? "0 4px 14px rgba(249,115,22,0.40)"
+              : "0 4px 14px rgba(59,130,246,0.35)",
+            animation: `ania-flow-pop .28s ease ${0.04 * idx}s both`,
+            WebkitTapHighlightColor: "transparent"
+          },
+          children: opt.label != null
+            ? flow_.resolveLabel(opt.label)
+            : (isEscalate ? tr.t("chat.flow.escalate") : String(opt.value))
+        });
+      }),
+      // "Voltar" bubble (only when there's history to pop)
+      flow_.canGoBack && jsx("button", {
+        key: "flow-back",
+        className: "ania-flow-bubble",
+        onClick: () => flow_.goBack(),
+        style: {
+          flex: "0 1 auto",
+          maxWidth: "100%",
+          minHeight: "44px",
+          padding: "11px 18px",
+          borderRadius: "20px",
+          border: "2px solid #e5e7eb",
+          cursor: "pointer",
+          fontSize: "14px",
+          fontWeight: "600",
+          lineHeight: "1.25",
+          color: "#6b7280",
+          whiteSpace: "normal",
+          overflowWrap: "anywhere",
+          backgroundColor: "#ffffff",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
+          animation: "ania-flow-pop .28s ease both",
+          WebkitTapHighlightColor: "transparent"
+        },
+        children: "← " + tr.t("chat.flow.back")
+      })
+    ]
+  }) : null;
+
+  // ── Flow INTERACTION region ─────────────────────────────────────────────────
+  // Rendered as a sibling BELOW the scrollable transcript whenever a flow node
+  // is live. It pins the CURRENT QUESTION at the top (prominent, always visible)
+  // and puts the answer affordances (option bubbles OR typed input) in their own
+  // independently-scrolling sub-area below it. This is the fix for the operator's
+  // bug: the options can never scroll the question out of view, and the question
+  // reads first. Backward-compatible: null when no flow node is active.
+  const flowInteractionRegion = flowNodeActive ? jsxs("div", {
+    style: {
+      flexShrink: 0,
+      display: "flex",
+      flexDirection: "column",
+      minHeight: 0,
+      // Cap the whole region so it + transcript + input bar fit small screens.
+      maxHeight: `min(55vh, max(180px, calc(100vh - ${height + 140}px)))`,
+      margin: "0 0 4px",
+      padding: "10px 12px 4px",
+      borderTop: "1px solid rgba(0,0,0,0.06)",
+      background: "linear-gradient(180deg, rgba(99,102,241,0.06) 0%, rgba(99,102,241,0) 100%)",
+      boxSizing: "border-box"
+    },
+    children: [
+      // PINNED QUESTION HEADER — prominent, bold, larger; never scrolled away.
+      jsxs("div", {
+        ref: flowQuestionRef,
+        style: {
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "flex-start",
+          gap: "8px",
+          padding: "12px 14px",
+          marginBottom: "8px",
+          borderRadius: "14px",
+          backgroundColor: "#ffffff",
+          boxShadow: "0 2px 8px rgba(15,23,42,0.14)"
+        },
+        children: [
+          jsx("div", {
+            "aria-hidden": "true",
+            style: {
+              flexShrink: 0,
+              marginTop: "2px",
+              width: "8px",
+              height: "8px",
+              borderRadius: "50%",
+              backgroundColor: "#6366f1",
+              boxShadow: "0 0 0 4px rgba(99,102,241,0.18)"
+            }
+          }),
+          jsx("div", {
+            role: "status",
+            "aria-live": "polite",
+            style: {
+              minWidth: 0,
+              flex: "1 1 auto",
+              fontSize: "clamp(15px, 4.2vw, 18px)",
+              fontWeight: "700",
+              lineHeight: "1.35",
+              color: "#111827",
+              overflowWrap: "anywhere",
+              wordBreak: "break-word"
+            },
+            children: flowQuestionText
+          })
+        ]
+      }),
+      // SCROLLABLE ANSWERS — options/input scroll here; the question stays put.
+      jsx("div", {
+        className: "ania-chat-scroll",
+        style: {
+          flex: "1 1 auto",
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: "hidden",
+          WebkitOverflowScrolling: "touch",
+          paddingRight: "2px"
+        },
+        children: flow_.currentInput ? flowInputElement : flowOptionsElement
+      })
+    ]
+  }) : null;
 
   return jsx(
     AniaAvatar,
@@ -782,55 +1408,72 @@ export const AvatarChatbot = ({
 
           // ========== ÁREA DE MENSAGENS ==========
           jsxs("div", {
+            className: "ania-chat-scroll",
             style: {
               flex: "1 1 auto",
               minHeight: "60px",
-              maxHeight: `max(120px, calc(100vh - ${height + 180}px))`,
+              // Growth cap only — when space is tight the flex parent (which is
+              // clamped to the viewport) shrinks this area, so the input bar is
+              // never pushed off screen. No viewport math needed here.
+              maxHeight: flowNodeActive ? "min(220px, 30vh)" : "min(420px, 48vh)",
               overflowY: "auto",
-              padding: "12px 16px",
-              WebkitOverflowScrolling: "touch"
+              padding: "14px 14px 6px",
+              WebkitOverflowScrolling: "touch",
+              overflowX: "hidden"
             },
             children: [
-              // Lista de mensagens
-              allMessages.map((msg) => {
+              // Lista de mensagens (transcript). The CURRENT flow question is
+              // pinned in its own header below, so it's filtered out here.
+              // Messages by the same sender are GROUPED: the name renders once
+              // per run and bubbles inside a run sit closer together.
+              transcriptMessages.map((msg, idx) => {
                 const isUser = msg.role === "user";
+                const prev = transcriptMessages[idx - 1];
+                const isFirstOfGroup = !prev || prev.role !== msg.role;
                 return jsx("div", {
                   key: msg.id,
+                  className: "ania-msg-in",
                   style: {
                     display: "flex",
                     justifyContent: isUser ? "flex-end" : "flex-start",
-                    marginBottom: "12px"
+                    marginTop: isFirstOfGroup && idx > 0 ? "14px" : "4px"
                   },
                   children: jsxs("div", {
-                    style: { maxWidth: "80%" },
+                    style: { maxWidth: "85%", minWidth: 0 },
                     children: [
-                      // Nome do remetente
-                      jsx("div", {
+                      // Nome do remetente — once per group, quiet label.
+                      isFirstOfGroup && jsx("div", {
                         style: {
                           fontSize: "11px",
                           fontWeight: "600",
-                          marginBottom: "4px",
-                          padding: "4px 12px",
-                          borderRadius: "20px",
+                          letterSpacing: "0.01em",
+                          marginBottom: "3px",
+                          padding: "2px 10px",
+                          borderRadius: "999px",
                           display: "inline-block",
-                          backgroundColor: isUser ? "#3b82f6" : "#ffffff",
-                          color: isUser ? "#ffffff" : "#374151",
-                          boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+                          backgroundColor: "rgba(255,255,255,0.92)",
+                          color: "#475569",
+                          float: isUser ? "right" : "none"
                         },
                         children: isUser ? userName : assistantName
                       }),
                       // Balão da mensagem
                       jsxs("div", {
                         style: {
-                          padding: "12px 18px",
-                          borderRadius: "20px",
-                          borderBottomLeftRadius: isUser ? "20px" : "6px",
-                          borderBottomRightRadius: isUser ? "6px" : "20px",
+                          clear: "both",
+                          padding: "11px 15px",
+                          borderRadius: "18px",
+                          borderBottomLeftRadius: isUser ? "18px" : "5px",
+                          borderBottomRightRadius: isUser ? "5px" : "18px",
                           fontSize: "14px",
                           lineHeight: "1.5",
-                          backgroundColor: isUser ? "#3b82f6" : "#ffffff",
+                          background: isUser
+                            ? "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)"
+                            : "#ffffff",
                           color: isUser ? "#ffffff" : "#1f2937",
-                          boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
+                          boxShadow: "0 2px 8px rgba(15,23,42,0.12)",
+                          overflowWrap: "anywhere",
+                          wordBreak: "break-word"
                         },
                         children: [
                           // Attachments
@@ -865,9 +1508,16 @@ export const AvatarChatbot = ({
                 });
               }),
 
+              // NOTE: the flow QUESTION + answer affordances (option bubbles /
+              // typed input) are no longer rendered inside this scrollable
+              // transcript. They live in `flowInteractionRegion` below — a
+              // sibling that pins the current question at the top and lets only
+              // the answers scroll, so the question is never buried (v1.7.1).
+
               // Loading indicator
               isLoading && jsx("div", {
-                style: { display: "flex", justifyContent: "flex-start", marginBottom: "12px" },
+                className: "ania-msg-in",
+                style: { display: "flex", justifyContent: "flex-start", marginTop: "14px" },
                 children: jsxs("div", {
                   style: { maxWidth: "80%" },
                   children: [
@@ -875,30 +1525,31 @@ export const AvatarChatbot = ({
                       style: {
                         fontSize: "11px",
                         fontWeight: "600",
-                        marginBottom: "4px",
-                        padding: "4px 12px",
-                        borderRadius: "20px",
+                        letterSpacing: "0.01em",
+                        marginBottom: "3px",
+                        padding: "2px 10px",
+                        borderRadius: "999px",
                         display: "inline-block",
-                        backgroundColor: "#ffffff",
-                        color: "#374151",
-                        boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+                        backgroundColor: "rgba(255,255,255,0.92)",
+                        color: "#475569"
                       },
                       children: assistantName
                     }),
                     jsx("div", {
                       style: {
-                        padding: "12px 18px",
-                        borderRadius: "20px",
-                        borderBottomLeftRadius: "6px",
+                        padding: "13px 15px",
+                        borderRadius: "18px",
+                        borderBottomLeftRadius: "5px",
                         backgroundColor: "#ffffff",
-                        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                        boxShadow: "0 2px 8px rgba(15,23,42,0.12)",
                         display: "flex",
-                        gap: "6px"
+                        gap: "5px",
+                        width: "fit-content"
                       },
                       children: [
-                        jsx("div", { style: { width: "8px", height: "8px", borderRadius: "50%", backgroundColor: "#3b82f6", animation: "bounce 1s infinite" } }),
-                        jsx("div", { style: { width: "8px", height: "8px", borderRadius: "50%", backgroundColor: "#3b82f6", animation: "bounce 1s infinite 0.15s" } }),
-                        jsx("div", { style: { width: "8px", height: "8px", borderRadius: "50%", backgroundColor: "#3b82f6", animation: "bounce 1s infinite 0.3s" } })
+                        jsx("div", { style: { width: "7px", height: "7px", borderRadius: "50%", backgroundColor: "#6366f1", animation: "ania-pulse 1s infinite" } }),
+                        jsx("div", { style: { width: "7px", height: "7px", borderRadius: "50%", backgroundColor: "#6366f1", animation: "ania-pulse 1s infinite 0.18s" } }),
+                        jsx("div", { style: { width: "7px", height: "7px", borderRadius: "50%", backgroundColor: "#6366f1", animation: "ania-pulse 1s infinite 0.36s" } })
                       ]
                     })
                   ]
@@ -908,6 +1559,11 @@ export const AvatarChatbot = ({
               jsx("div", { ref: messagesEndRef })
             ]
           }),
+
+          // ========== FLOW: QUESTION PINNED + SCROLLABLE ANSWERS ==========
+          // Sibling below the transcript. Pins the current question at the top
+          // (prominent) and scrolls only the options/input below it (v1.7.1 fix).
+          flowInteractionRegion,
 
           // ========== BOTÃO ENABLE SOUND ==========
           enableTTS && !ttsEnabled && jsx("div", {
@@ -1001,6 +1657,7 @@ export const AvatarChatbot = ({
               enableAttachments && jsx("button", {
                 onClick: () => fileInputRef.current?.click(),
                 disabled: isLoading,
+                className: "ania-chat-iconbtn",
                 style: {
                   width: "44px",
                   height: "44px",
@@ -1014,7 +1671,7 @@ export const AvatarChatbot = ({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
+                  boxShadow: "0 2px 8px rgba(15,23,42,0.14)"
                 },
                 children: jsx(Paperclip, { size: 18, color: "#6b7280" })
               }),
@@ -1022,6 +1679,9 @@ export const AvatarChatbot = ({
 
               // Input de texto
               jsx("input", {
+                id: "ania-chat-input",
+                name: "ania-chat-input",
+                className: "ania-chat-input",
                 type: "text",
                 value: inputMessage,
                 onChange: (e) => setInputMessage(e.target.value),
@@ -1031,14 +1691,15 @@ export const AvatarChatbot = ({
                 style: {
                   flex: "1 1 0%",
                   minWidth: 0,
-                  padding: "12px 16px",
-                  borderRadius: "24px",
-                  border: isListening ? "2px solid #ef4444" : "2px solid #e5e7eb",
+                  padding: "11px 16px",
+                  borderRadius: "999px",
+                  border: isListening ? "2px solid #ef4444" : "1.5px solid #e2e8f0",
                   backgroundColor: isListening ? "#fef2f2" : "#ffffff",
-                  fontSize: "14px",
+                  // 16px prevents iOS Safari from auto-zooming the page on focus.
+                  fontSize: "16px",
+                  fontFamily: "inherit",
                   color: "#1f2937",
                   outline: "none",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
                   boxSizing: "border-box"
                 }
               }),
@@ -1047,6 +1708,7 @@ export const AvatarChatbot = ({
               enableSTT && jsx("button", {
                 onClick: handleMicToggle,
                 disabled: isLoading,
+                className: "ania-chat-iconbtn",
                 style: {
                   width: "44px",
                   height: "44px",
@@ -1060,7 +1722,7 @@ export const AvatarChatbot = ({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: isListening ? "0 4px 12px rgba(239,68,68,0.4)" : "0 4px 12px rgba(0,0,0,0.15)"
+                  boxShadow: isListening ? "0 2px 8px rgba(239,68,68,0.45)" : "0 2px 8px rgba(15,23,42,0.14)"
                 },
                 children: isListening ? jsx(MicOff, { size: 18, color: "#ffffff" }) : jsx(Mic, { size: 18, color: "#6b7280" })
               }),
@@ -1069,6 +1731,7 @@ export const AvatarChatbot = ({
               jsx("button", {
                 onClick: handleSend,
                 disabled: (!inputMessage.trim() && attachments.length === 0) || isLoading,
+                className: "ania-chat-iconbtn",
                 style: {
                   width: "44px",
                   height: "44px",
@@ -1077,12 +1740,14 @@ export const AvatarChatbot = ({
                   flexShrink: 0,
                   borderRadius: "50%",
                   border: "none",
-                  backgroundColor: (!inputMessage.trim() && attachments.length === 0) || isLoading ? "#d1d5db" : "#3b82f6",
+                  background: (!inputMessage.trim() && attachments.length === 0) || isLoading
+                    ? "#d1d5db"
+                    : "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
                   cursor: (!inputMessage.trim() && attachments.length === 0) || isLoading ? "not-allowed" : "pointer",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: "0 4px 12px rgba(59,130,246,0.4)"
+                  boxShadow: "0 2px 8px rgba(59,130,246,0.35)"
                 },
                 children: jsx(Send, { size: 18, color: "#ffffff" })
               }),

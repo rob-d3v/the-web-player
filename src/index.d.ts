@@ -112,6 +112,18 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   ttsApiUrl?: string;
   ttsVoiceId?: string;
   ttsModel?: string;
+  /**
+   * Stream a long reply sentence-by-sentence through a queue (first sentence
+   * starts fast, next is synthesized while the current plays). Default true.
+   * Set false for legacy one-shot whole-text synthesis.
+   */
+  ttsChunking?: boolean;
+  /** Pause between spoken chunks, ms. Default 250. */
+  chunkGapMs?: number;
+  /** Hard-wrap chunks longer than this many chars (0 = off). */
+  maxChunkChars?: number;
+  /** Cap ONLY the first spoken chunk (chars) for fast speech start. Default 100 (0 = off). */
+  firstChunkMaxChars?: number;
   transparentChat?: boolean;
   // Piper TTS (browser ONNX)
   piperModelUrl?: string;
@@ -162,6 +174,35 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   enablePostMessageControl?: boolean;
   /** Allowed origins for postMessage control. Use ['*'] to allow all (unsafe). */
   postMessageOrigins?: string[];
+  // ===== NO-AI bubble/balloon flow engine =====
+  /**
+   * A deterministic decision-tree flow. When set, the avatar speaks each node's
+   * prompt and the user answers by tapping clickable bubbles (no LLM until an
+   * explicit escalation). Omit it and behavior is identical to today. */
+  flow?: FlowDef | null;
+  /** URL to lazily fetch a flow JSON from. Ignored when `flow` is supplied. */
+  flowUrl?: string | null;
+  /** Opaque app/tenant id forwarded to the flow capture/escalation callbacks. */
+  appId?: string | null;
+  /** Fired on every captured flow answer (stream to a CRM). */
+  onFlowCapture?: (info: { sessionId: string; appId?: string | null; key: string; value: any; collected: Record<string, any> }) => void;
+  /** Fired when the flow escalates. Defaults to forwarding to the webhook. */
+  onFlowEscalate?: (info: { collected: Record<string, any>; contact: FlowContact; sessionId: string; transcript: Array<{ role: string; text: string }> }) => void;
+  /**
+   * Known-user fields pre-seeded into the flow's `collected` (e.g. `{ name, email }`
+   * from the host app's auth/session) so an authenticated visitor is already
+   * known — the chat greets them by name and skips inputs whose value is present.
+   */
+  initialContext?: Record<string, any> | null;
+  /** Persist flow state to localStorage so a returning visitor is remembered (default true). */
+  persist?: boolean;
+  /** Override the localStorage persistence key (default `ania-flow-<appId|flowId>`). */
+  persistKey?: string | null;
+  /**
+   * A `collected` key gating persistence (LGPD): nothing is written until
+   * `collected[flowConsentKey]` is truthy. Unset = host owns consent gating.
+   */
+  flowConsentKey?: string | null;
 }
 
 // ===== Hook Options & Results =====
@@ -176,6 +217,20 @@ export interface UseTTSDetectionOptions {
   onTalkEnd?: () => void;
   ttsProvider?: string;
   ttsConfig?: Record<string, any>;
+  /** Split long text into sentence chunks and stream them (default true). */
+  ttsChunking?: boolean;
+  /** Pause between spoken chunks, ms (default 250). */
+  chunkGapMs?: number;
+  /** Hard-wrap chunks longer than this many chars (0 = off). */
+  maxChunkChars?: number;
+  /** Cap ONLY the first spoken chunk (chars) for fast speech start (default 100, 0 = off). */
+  firstChunkMaxChars?: number;
+  /** Merge fragments shorter than this into the next chunk (default 12). */
+  minChunkChars?: number;
+  /** Also split at `;` and `:` (default false). */
+  splitOnSemicolon?: boolean;
+  /** Fires with each chunk's <audio> element so lip-sync can reconnect. */
+  onChunkAudio?: (audio: HTMLAudioElement) => void;
 }
 
 export interface UseTTSDetectionResult {
@@ -192,6 +247,11 @@ export interface SpeakOptions {
   volume?: number;
   voice?: SpeechSynthesisVoice;
   cancelPrevious?: boolean;
+  /** Per-call override of the streaming/chunking behavior. */
+  ttsChunking?: boolean;
+  maxChunkChars?: number;
+  minChunkChars?: number;
+  splitOnSemicolon?: boolean;
 }
 
 export interface UseChatbotOptions {
@@ -232,6 +292,239 @@ export interface UseChatbotResult {
   error: string | null;
   clearMessages: () => void;
 }
+
+// ===== NO-AI Flow Engine =====
+
+/** One clickable bubble within a flow node. */
+export interface FlowOption {
+  /** Bubble text (NEVER spoken by TTS). */
+  label?: string;
+  /** Value recorded into `collected` (via node.collectKey or option.capture). */
+  value?: any;
+  /** Id of the node to advance to when this option is selected. */
+  next?: string;
+  /**
+   * Record answer(s) into `collected`. A string key stores `option.value`;
+   * an object merges its pairs verbatim.
+   */
+  capture?: string | Record<string, any>;
+  /** Selecting this option escalates to the AI/webhook instead of navigating. */
+  escalate?: boolean;
+  /** Selecting this option ends the flow. */
+  terminal?: boolean;
+  /**
+   * Marks this option as a "back" affordance. The engine renders its own single
+   * back bubble (when `canGoBack`), so any option flagged `isBack` — or whose
+   * label matches the localized back string, or whose `next` re-targets the
+   * previous node — is filtered out of `visibleOptions` to avoid a double back.
+   */
+  isBack?: boolean;
+}
+
+/**
+ * TYPED free-text capture spec on a flow node (lead-gen contact capture). When a
+ * node carries an `input`, the host renders a text field (or textarea) + submit
+ * button INSTEAD of option bubbles. The avatar still SPEAKS the node's prompt;
+ * the typed answer is silent and recorded into `collected` ONLY — it is never
+ * sent to the AI webhook/sendMessage.
+ */
+export interface FlowInput {
+  /** `collected[key]` receives the (trimmed) typed value on a valid submit. */
+  key: string;
+  /** Field kind. Drives the DOM input type + mobile keyboard. Default 'text'. */
+  type?: 'text' | 'email' | 'tel' | 'number' | 'textarea';
+  /** Field placeholder (i18n key or literal text). */
+  placeholder?: string;
+  /** Whether a non-empty value is required. Default true. */
+  required?: boolean;
+  /**
+   * Validation rule: a built-in name (`'email'` | `'phone'` | `'cep'`) or a
+   * regex source string. Omit for no format check (required-only).
+   */
+  validate?: string;
+  /**
+   * Inline error message shown on an invalid submit (i18n key or literal). May
+   * contain `{var}`/`{{var}}` placeholders (e.g. `{name}`) — they are
+   * interpolated from `collected`, the SAME as prompts and labels.
+   */
+  errorMsg?: string;
+  /** Submit button label (i18n key or literal; `{var}`-interpolated). Defaults to `chat.flow.submit`. */
+  submitLabel?: string;
+  /** Skip ("Pular") button label (i18n key or literal; `{var}`-interpolated). Defaults to `chat.flow.skip`. */
+  skipLabel?: string;
+  /** Id of the node to advance to on a valid submit. */
+  next?: string;
+  /** When true, render a "Pular"/Skip bubble that advances to `next` without capturing. */
+  optionalSkip?: boolean;
+}
+
+/** A node (step) in a flow. */
+export interface FlowNode {
+  id: string;
+  /** Text OR an i18n key. Spoken via speak() on enter (unless `speak:false`). */
+  prompt?: string;
+  /** Default true. false = render silently (do not TTS the prompt). */
+  speak?: boolean;
+  /** Clickable bubbles shown for this node. */
+  options?: FlowOption[];
+  /**
+   * TYPED free-text capture. When present, the host renders a text field instead
+   * of (or alongside) `options`. The typed value is recorded into `collected`
+   * only and never sent to the AI webhook.
+   */
+  input?: FlowInput;
+  /** Optional id to auto-advance to. */
+  autoNext?: string;
+  /** Entering this node escalates to the AI/webhook. */
+  escalate?: boolean;
+  /** Entering this node ends the flow. */
+  terminal?: boolean;
+  /** Store the selected option's `value` under this key in `collected`. */
+  collectKey?: string;
+  /**
+   * Force this input node to ALWAYS ask, even when its key is already known
+   * (from seeded known-user context or restored persistence). Default false =
+   * skip-known (auto-advance past an input whose value is already present).
+   */
+  alwaysAsk?: boolean;
+}
+
+/** A NO-AI decision-tree flow definition. */
+export interface FlowDef {
+  id: string;
+  version?: string | number;
+  startNode: string;
+  nodes: Record<string, FlowNode>;
+}
+
+/** Internal reducer state (also returned to advanced consumers). */
+export interface FlowState {
+  currentNodeId: string | null;
+  backStack: string[];
+  collected: Record<string, any>;
+  done: boolean;
+  escalated: boolean;
+  /** Last input-validation error (i18n key or literal); null when valid. */
+  inputError: string | null;
+}
+
+export type FlowEffect =
+  | { type: 'message'; text: string }
+  | { type: 'speak'; text: string }
+  | { type: 'capture'; key: string; value: any; collected: Record<string, any> }
+  | { type: 'escalate'; collected: Record<string, any> };
+
+export type FlowAction =
+  | { type: 'START' }
+  | { type: 'RESET' }
+  | { type: 'RESUME'; nodeId: string }
+  | { type: 'SELECT'; option: FlowOption }
+  | { type: 'SUBMIT_INPUT'; value: string }
+  | { type: 'BACK' }
+  | { type: 'GOTO'; nodeId: string };
+
+/** Captured contact fields surfaced to the AI on escalation. */
+export interface FlowContact {
+  name?: string;
+  phone?: string;
+  email?: string;
+}
+
+export interface UseFlowEngineDeps {
+  /** TTS the resolved node prompt. */
+  speak?: (text: string, opts?: SpeakOptions) => void;
+  /** Webhook/LLM send used on escalate when no `onEscalate` is given. */
+  sendMessage?: (text: string, meta?: Record<string, any>) => void;
+  locale?: string;
+  messagesOverride?: MessagesOverride;
+  /** Fired on each captured answer (stream to a CRM). */
+  onCapture?: (info: { sessionId: string; appId?: string | null; key: string; value: any; collected: Record<string, any> }) => void;
+  /** Fired when the flow escalates to the AI (carries the captured contact). */
+  onEscalate?: (info: { collected: Record<string, any>; contact: FlowContact; sessionId: string; transcript: Array<{ role: string; text: string }> }) => void;
+  /**
+   * Fired with each entered node's resolved prompt so the host can append it to
+   * its visible chat log (keeps the spoken conversation visible in the transcript).
+   */
+  onPrompt?: (text: string) => void;
+  /** Opaque app/tenant id forwarded to the callbacks. */
+  appId?: string | null;
+  /** BCP-47 lang passed to speak(). */
+  lang?: string;
+  /** Prompt i18n resolver (e.g. a Translator's `t`). */
+  translate?: (key: string) => string;
+  /** Known-user fields pre-seeded into `collected` (e.g. `{ name, email }` from auth). */
+  initialContext?: Record<string, any> | null;
+  /** Persist `{ sessionId, collected, currentNodeId }` to localStorage (default true). */
+  persist?: boolean;
+  /** Override the localStorage key (default `ania-flow-<appId|flowId>`). */
+  persistKey?: string;
+  /** A `collected` key gating persistence (LGPD) — only write once it's truthy. */
+  consentKey?: string;
+}
+
+export interface UseFlowEngineResult {
+  currentNode: FlowNode | null;
+  /** The current node's prompt with i18n applied. */
+  currentPrompt: string;
+  /** The current node's TYPED-input spec, or null when it's an options node. */
+  currentInput: FlowInput | null;
+  visibleOptions: FlowOption[];
+  /** Resolve an option label with i18n + `{var}`/`{{var}}` interpolation from `collected`. */
+  resolveLabel: (label?: string) => string;
+  /**
+   * Resolve ANY user-facing flow string the same way prompts are: i18n key →
+   * text, then `{var}`/`{{var}}` interpolation from `collected`. Use for input
+   * placeholders, submit/skip labels, and option labels.
+   */
+  resolveText: (text?: string) => string;
+  selectOption: (option: FlowOption) => void;
+  /**
+   * Submit a typed value for the current input node. Validates against the spec;
+   * on success captures the value into `collected` + advances, on failure sets
+   * `inputError` and does NOT advance. The typed value is never spoken nor sent
+   * to the webhook. Returns `{ ok, error }` synchronously.
+   */
+  submitInput: (value: string) => { ok: boolean; error: string | null };
+  /**
+   * Last input-validation error, FULLY resolved (i18n key → text, then `{var}`
+   * interpolated from `collected`) and ready to render directly; null when valid.
+   */
+  inputError: string | null;
+  goBack: () => void;
+  canGoBack: boolean;
+  reset: () => void;
+  /** Jump to a node by id (used by the `flow <nodeId>` command verb). */
+  goto: (nodeId: string) => void;
+  /** Clear any persisted flow state for this app/key (LGPD: forget the visitor). */
+  clearPersistedFlow: () => void;
+  collected: Record<string, any>;
+  sessionId: string;
+  isEscalated: boolean;
+  isDone: boolean;
+}
+
+export function useFlowEngine(flowDef: FlowDef | null | undefined, deps?: UseFlowEngineDeps): UseFlowEngineResult;
+
+/** Pure reducer behind useFlowEngine. */
+export function flowReducer(
+  state: FlowState | undefined,
+  action: FlowAction,
+  flowDef: FlowDef,
+  opts?: { translate?: (key: string) => string }
+): { state: FlowState; effects: FlowEffect[] };
+export function flowInitialState(): FlowState;
+export function flowGetNode(flowDef: FlowDef, nodeId: string | null): FlowNode | null;
+export function flowResolvePrompt(prompt: string | null | undefined, translate?: (key: string) => string, collected?: Record<string, any>): string;
+/** Interpolate `{var}`/`{{var}}` placeholders in text from a `collected` map. */
+export function flowInterpolate(text: string | null | undefined, collected?: Record<string, any>): string;
+export function flowVisibleOptions(node: FlowNode | null): FlowOption[];
+/** The TYPED-input spec of a node, or null when it has none. */
+export function flowNodeInput(node: FlowNode | null): FlowInput | null;
+/** Validate a typed value against an input spec. Pure; no side effects. */
+export function flowValidateInput(
+  input: FlowInput | null | undefined,
+  value: string
+): { ok: boolean; errorKey?: string };
 
 export interface UseAniaAvatarRefResult {
   ref: RefObject<any>;
@@ -559,6 +852,8 @@ export interface CommandContext {
   setSensitivity?: (value: number) => void;
   setSpeeds?: (idle: number, talk: number) => void;
   triggerWake?: () => void;
+  /** Jump the NO-AI flow to a node id (the `flow <nodeId>` verb). */
+  flowGoto?: (nodeId: string) => void;
   stopSpeaking?: () => void;
   onInfo?: (info: any) => void;
   logger?: Pick<Console, 'warn' | 'error' | 'log'>;

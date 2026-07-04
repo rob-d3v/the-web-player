@@ -118,6 +118,12 @@ export const useSpeechRecognition = ({
         reader.onloadend = async () => {
           const base64Audio = reader.result.split(',')[1];
 
+          // SECURITY: Google's REST API only accepts the key as a `?key=` query
+          // param, which can leak via browser history, Referer, and proxy logs.
+          // Supply a BROWSER-RESTRICTED, HTTP-referrer-locked key for `sttApiKey`
+          // (restrict it to your origin in the Google Cloud console) so the
+          // exposed key cannot be reused elsewhere. Prefer routing through your
+          // own backend / `sttApiUrl` proxy if you must keep the key off the wire.
           const apiUrl = sttApiUrl || `https://speech.googleapis.com/v1/speech:recognize?key=${sttApiKey}`;
 
           try {

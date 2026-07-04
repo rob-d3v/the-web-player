@@ -2,6 +2,52 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.9.0]
+
+### Changed — TTS latency (Piper + all cloud providers)
+- `chunkGapMs` default dropped **1000ms -> 250ms**: the pause between spoken
+  sentences is now a breath, not a stall (the synthesized audio already carries
+  each sentence's own trailing silence).
+- New **`firstChunkMaxChars`** prop (default `100`, `0` = off): only the FIRST
+  spoken chunk is capped, split at a comma (preferred) or the last space, so the
+  first synthesis is tiny and speech starts almost immediately; the remainder of
+  the reply streams behind it.
+- Synthesize-ahead window widened to **2 chunks** (was 1) so playback never
+  waits on CPU-bound Piper inference. Playback stays strictly serial.
+- Piper: **multi-threaded WASM** when the page is crossOriginIsolated
+  (COOP/COEP headers), capped at 4 threads; single-thread elsewhere (no
+  SharedArrayBuffer requirement).
+- Piper: **LRU synthesis cache** (24 entries, keyed `voice|speaker|text`) —
+  repeated greetings and flow prompts replay instantly with zero inference.
+
+### Changed — Chat UI / responsiveness
+- The widget now sets its **own font stack** and no longer inherits the host
+  page's fonts (a serif host made the chat look broken).
+- **Message grouping**: the sender label renders once per run of same-role
+  messages; tighter rhythm inside a group, clear separation between groups.
+- Bubbles: user messages use the brand indigo->blue gradient; assistant stays
+  white; single soft shadow (no border+shadow stacking).
+- Typing indicator dots now actually animate (the old `bounce` keyframe was
+  never registered).
+- Per-message entrance animation with `prefers-reduced-motion` support, thin
+  styled scrollbars, input focus ring, and a 16px input font (prevents iOS
+  Safari auto-zoom on focus). The pinned flow-question card drops its 4px
+  side-stripe for a cleaner card.
+- **Mobile (<768px)**: an open widget becomes an edge-to-edge bottom sheet
+  (8px inset) and the avatar stage is capped at 34vh so the conversation owns
+  the screen. Transcript growth caps replace the fragile `100vh - height`
+  math (the flex parent clamps instead — the input bar can never be pushed
+  off screen).
+
+### Included from 1.6.x-1.8.x (first public sync since 1.5.0)
+- NO-AI bubble/balloon **flow engine** (deterministic decision trees, typed
+  input nodes, prompt interpolation, visitor memory, resume-on-reload,
+  LGPD consent gating).
+- **Streaming/chunked TTS**: long replies speak sentence-by-sentence through a
+  strictly-serial queue with synthesize-ahead prefetch.
+- Plugin architecture (custom TTS/STT providers), wake word, postMessage
+  external control.
+
 ## [1.5.0]
 
 ### Added — Localization (i18n)

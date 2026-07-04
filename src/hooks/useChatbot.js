@@ -1,5 +1,29 @@
 import { useState, useCallback } from 'react';
 
+// Friendly, localized fallback copy shown to the user when the webhook fails.
+// `translate` is the AvatarChatbot's i18n resolver (tr.t); when absent (the hook
+// used standalone) we degrade to the pt-BR base wording so behavior is unchanged
+// for callers that don't pass a translator.
+const DEFAULT_GENERIC_ERROR = 'Tive um probleminha aqui, pode tentar de novo?';
+
+function resolveGenericError(translate) {
+  if (typeof translate === 'function') {
+    const out = translate('chat.error.generic');
+    // createTranslator returns the key itself on a miss → use our default copy
+    if (out && out !== 'chat.error.generic') return out;
+  }
+  return DEFAULT_GENERIC_ERROR;
+}
+
+// A 5xx (server) or a network/CORS failure (fetch rejects → no response object)
+// is transient and worth a single silent retry — it masks backend cold-starts.
+// A 4xx is the caller's fault and is NOT retried.
+function isRetriable(status) {
+  return status == null || status >= 500;
+}
+
+const RETRY_DELAY_MS = 1200;
+
 export const useChatbot = ({
   webhookUrl,
   webhookApiKey = null,
@@ -9,7 +33,10 @@ export const useChatbot = ({
   formatRequest,
   parseResponse,
   availableActions = [],
-  onActionTriggered
+  onActionTriggered,
+  // Optional i18n resolver (AvatarChatbot passes tr.t). Used only to localize
+  // the user-facing fallback message; the hook works without it.
+  translate
 } = {}) => {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -63,14 +90,41 @@ export const useChatbot = ({
         headers["X-API-Key"] = webhookApiKey;
       }
 
-      const response = await fetch(webhookUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody)
-      });
+      const body = JSON.stringify(requestBody);
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // Single POST attempt. Throws an Error carrying `.status` (the HTTP code,
+      // or null for a network/CORS failure where no response is produced) so
+      // the caller can decide whether the failure is retriable.
+      const attempt = async () => {
+        let response;
+        try {
+          response = await fetch(webhookUrl, { method: "POST", headers, body });
+        } catch (netErr) {
+          // fetch rejects on network/CORS failure — no HTTP status available.
+          const e = new Error(netErr && netErr.message ? netErr.message : "network error");
+          e.status = null;
+          e.cause = netErr;
+          throw e;
+        }
+        if (!response.ok) {
+          const e = new Error(`HTTP ${response.status}: ${response.statusText}`);
+          e.status = response.status;
+          throw e;
+        }
+        return response;
+      };
+
+      let response;
+      try {
+        response = await attempt();
+      } catch (firstErr) {
+        // ONE auto-retry on a transient (5xx / network) failure. This masks
+        // backend cold-starts that lost first-leads in the canary. A 4xx is the
+        // request's fault and is surfaced immediately.
+        if (!isRetriable(firstErr.status)) throw firstErr;
+        console.error('[useChatbot] webhook failed, retrying once in ' + RETRY_DELAY_MS + 'ms:', firstErr);
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        response = await attempt();
       }
 
       const data = await response.json();
@@ -116,7 +170,10 @@ export const useChatbot = ({
       setIsLoading(false);
       return botMessage;
     } catch (err) {
-      const friendlyMessage = "O sistema está em desenvolvimento. Aguarde, lançamento em breve!";
+      // Keep the raw cause (HTTP code / network message) for devs ONLY — it must
+      // never reach the user-facing bubble or the `error` state.
+      console.error('[useChatbot] webhook error (shown to user as friendly copy):', err);
+      const friendlyMessage = resolveGenericError(translate);
       const errorMessage = {
         id: Date.now() + 1,
         role: "assistant",
@@ -125,14 +182,15 @@ export const useChatbot = ({
         isError: true
       };
       setMessages((prev) => [...prev, errorMessage]);
-      setError(err.message);
+      // Surface the SAME friendly copy in the error chip — never a raw `HTTP <code>`.
+      setError(friendlyMessage);
       if (onError) {
         onError(err, friendlyMessage);
       }
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered, translate]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);

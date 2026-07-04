@@ -17,6 +17,7 @@
  *     setMuted,            // (bool) => void                — mic mute
  *     setSensitivity,      // (0..1) => void
  *     triggerWake,         // () => void                    — fire wake pipeline
+ *     flowGoto,            // (nodeId) => void              — jump the NO-AI flow
  *     stopSpeaking,        // () => void                    — cancel TTS/listen
  *     onInfo,              // (infoObject) => void          — optional sink
  *     logger,              // defaults to console
@@ -39,6 +40,7 @@ export const COMMAND_LIST = [
   { cmd: 'tts <text>', desc: 'Speak literal text via TTS (no LLM).' },
   { cmd: 'ask <text>', desc: 'Send text to the chatbot/LLM; reply is spoken.' },
   { cmd: 'provider <text>', desc: 'Alias of "ask".' },
+  { cmd: 'flow <nodeId>', desc: 'Jump the NO-AI flow to a node id.' },
   { cmd: 'wake', desc: 'Trigger the wake/assistant pipeline manually.' },
   { cmd: 'stop', desc: 'Stop speaking / listening.' },
   { cmd: 'help', desc: 'List all commands.' },
@@ -191,6 +193,12 @@ export const executeCommand = (line, ctx = {}) => {
         return err('No chatbot/LLM handler wired.');
       }
 
+      case 'flow': {
+        if (!args[0]) return err('Usage: flow <nodeId>');
+        if (ctx.flowGoto) { ctx.flowGoto(args[0]); return ok(`Flow jumped to "${args[0]}".`, { nodeId: args[0] }); }
+        return err('No flow engine wired.');
+      }
+
       case 'wake':
       case 'assistant':
         if (ctx.triggerWake) { ctx.triggerWake(); return ok('Wake pipeline triggered.'); }
@@ -245,12 +253,20 @@ export const installPostMessageControl = (ctx, options = {}) => {
     }
     const result = executeCommand(data.cmd, ctx);
     if (options.onResult) options.onResult(result, event);
-    // best-effort reply back to the sender
-    if (event.source && typeof event.source.postMessage === 'function') {
+    // best-effort reply back to the sender, but only to a concrete origin.
+    // When event.origin is 'null' (opaque/sandboxed origin) we must NOT fall
+    // back to a '*' targetOrigin, which would disclose the command result to
+    // any listener. Skip the reply in that case (fail closed).
+    if (
+      event.source &&
+      typeof event.source.postMessage === 'function' &&
+      event.origin &&
+      event.origin !== 'null'
+    ) {
       try {
         event.source.postMessage(
           { source: 'ania-reply', cmd: data.cmd, result },
-          event.origin && event.origin !== 'null' ? event.origin : '*'
+          event.origin
         );
       } catch (e) { /* ignore */ }
     }
