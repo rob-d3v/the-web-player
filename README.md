@@ -10,10 +10,20 @@ npm install ania-avatar-react
 
 **Peer dependencies:** `react >= 17.0.0`, `react-dom >= 17.0.0`
 
-**Required:** Load AniaPlayer before using:
+**Required:** Load AniaPlayer before using. Pin a specific version and add a
+[Subresource Integrity](https://developer.mozilla.org/docs/Web/Security/Subresource_Integrity)
+hash so a compromised or MITM'd CDN cannot run tampered JavaScript in your page:
 ```html
-<script src="https://cdn.example.com/ania-player.min.js"></script>
+<script
+  src="https://cdn.example.com/ania-player@1.5.0.min.js"
+  integrity="sha384-REPLACE_WITH_REAL_HASH_OF_THE_PINNED_FILE"
+  crossorigin="anonymous"
+></script>
 ```
+Generate the hash for the exact file you pin, e.g.
+`curl -s https://cdn.example.com/ania-player@1.5.0.min.js | openssl dgst -sha384 -binary | openssl base64 -A`,
+and prefix the result with `sha384-`. The browser will refuse to execute the
+script if the delivered bytes don't match.
 
 ---
 
@@ -180,6 +190,126 @@ A host page drives the embedded avatar with:
 
 ```js
 iframeOrWindow.postMessage({ source: 'ania', cmd: 'action 1' }, targetOrigin);
+```
+
+#### NO-AI Flow Engine Props (new in 1.6)
+
+A **deterministic, no-LLM** bubble/balloon conversation flow. The avatar speaks
+each step's prompt and the user answers by tapping clickable bubbles. No model
+is called until the user explicitly escalates. Free-text input keeps working
+alongside the flow, and **omitting `flow`/`flowUrl` leaves behavior identical to
+1.5**.
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `flow` | `FlowDef` | - | The flow definition (see schema below). When set, option bubbles render and the avatar speaks prompts |
+| `flowUrl` | `string` | - | URL to lazily fetch a flow JSON from (ignored when `flow` is given) |
+| `appId` | `string` | - | Opaque app/tenant id forwarded to the capture/escalation callbacks |
+| `onFlowCapture` | `({ sessionId, appId, key, value, collected }) => void` | - | Fired on every captured answer (stream to a CRM) |
+| `onFlowEscalate` | `({ collected, contact, sessionId, transcript }) => void` | - | Fired when the flow escalates. `contact` = `{ name, phone, email }`. Defaults to forwarding a name-aware escalation message to the webhook |
+| `initialContext` | `object` | - | Known-user fields (e.g. `{ name, email }` from auth) pre-seeded into `collected` — the chat greets a signed-in user by name and skips inputs it already has |
+| `persist` | `boolean` | `true` | Persist `{ sessionId, collected, currentNodeId }` to `localStorage` so a returning visitor (same browser) is remembered (30-day TTL) |
+| `persistKey` | `string` | `ania-flow-<appId\|flowId>` | Override the localStorage key |
+| `flowConsentKey` | `string` | - | LGPD: gate persistence on a `collected` key — nothing is stored until `collected[flowConsentKey]` is truthy; decline/reset clears it |
+
+##### TYPED-INPUT nodes (free-text lead capture, new in 1.7)
+
+A node may carry an `input` spec to capture a TYPED value (name, phone/WhatsApp,
+email, …) instead of clickable bubbles. The avatar still SPEAKS the prompt; the
+typed answer is **silent** and goes ONLY into `collected` (never sent to the AI
+webhook). The chatbot renders a labeled field + submit button (and a "Pular"
+bubble when `optionalSkip:true`); Enter submits.
+
+```js
+lead_name: {
+  id: 'lead_name',
+  prompt: 'Como posso te chamar?',         // spoken (TTS) + shown
+  input: {
+    key: 'name',                           // collected.name = the typed value
+    type: 'text',                          // text | email | tel | number | textarea
+    placeholder: 'Seu nome',               // i18n key or literal
+    required: true,                        // default true
+    next: 'lead_phone'                     // advance here on a valid submit
+  }
+},
+lead_phone: {
+  id: 'lead_phone',
+  prompt: 'Qual o seu WhatsApp com DDD?',
+  input: {
+    key: 'phone', type: 'tel',
+    validate: 'phone',                     // 'email' | 'phone' | 'cep' | <regex source>
+    errorMsg: 'Informe um telefone válido.', // inline error (i18n key or literal)
+    next: 'lead_email'
+  }
+},
+lead_email: {
+  id: 'lead_email',
+  prompt: 'E qual o seu melhor e-mail? (opcional)',
+  input: {
+    key: 'email', type: 'email', validate: 'email',
+    required: false, optionalSkip: true,   // render a "Pular" bubble → advance, no capture
+    next: 'lead_done'
+  }
+}
+```
+
+This name → phone → email chain streams each field to the CRM via `onFlowCapture`
+and, on escalation, hands the AI the `contact` so it greets the user personally.
+
+##### Personalization, known users & returning visitors (new in 1.7)
+
+- **`{var}` interpolation:** node prompts AND option labels substitute `{name}`
+  or `{{name}}` from `collected` (after i18n). Once `collected.name` is captured
+  (or seeded), `"Prazer, {name}!"` is spoken and shown as `"Prazer, João!"`.
+  A missing var resolves to empty cleanly (no raw `{name}`), so author greetings
+  to read naturally without a name: `"Bem-vindo de volta, {name}!"` → `"Bem-vindo
+  de volta!"`.
+- **Known users:** pass `initialContext={{ name, email }}` from your auth session
+  and the chat already knows the signed-in user (greets by name, skips known
+  inputs). Force a re-ask on a specific input with `alwaysAsk: true`.
+- **Returning visitors:** with `persist` (default on), the same browser restores
+  `collected` next visit. Gate it for LGPD with `flowConsentKey`. Call
+  `clearPersistedFlow()` (or `reset()`) to forget the visitor.
+
+**Flow definition schema** (`FlowDef`):
+
+```js
+{
+  id: 'support-flow',
+  version: '1.0.0',
+  startNode: 'welcome',
+  nodes: {
+    welcome: {
+      id: 'welcome',
+      prompt: 'How can I help?',     // string OR i18n key; spoken via TTS on enter
+      speak: true,                   // default true; false = render silently, no TTS
+      collectKey: 'intent',          // optional: store the picked option.value here
+      options: [
+        // label = bubble text (NEVER spoken); value recorded into `collected`
+        { label: 'Buy',   value: 'buy',   next: 'buy_what' },
+        { label: 'Support', value: 'support', next: 'support_area',
+          capture: { area: 'support' } },          // merge object into collected
+        { label: 'Agent', value: 'human', escalate: true } // hand off to the AI
+      ]
+    },
+    // ... a `terminal: true` option (or node) ends the flow
+  }
+}
+```
+
+`capture` may be an object (merged verbatim) or a string key (stores
+`option.value`). Drive it imperatively with the `flow <nodeId>` command verb.
+Use the headless `useFlowEngine` hook (or the pure `flowReducer` export) to test
+flows without React. A demo flow + sanity test live under `examples/`.
+
+```jsx
+<AvatarChatbot
+  avatarUrl="..."
+  webhookUrl="https://.../webhook"   // used only when the user escalates
+  flow={myFlow}
+  appId="acme"
+  onFlowCapture={({ key, value, collected }) => crm.update(collected)}
+/>
 ```
 
 #### Callbacks
@@ -465,7 +595,8 @@ executeCommand('tts Hello there', ctx);
 
 **Commands:** `show`, `hide`, `toggle`, `action <id|index>`, `actions`,
 `info`, `speed <idle> [talk]`, `sensitivity <0..1>`, `mute`, `unmute`,
-`tts <text>`, `ask <text>` (alias `provider`), `wake`, `stop`, `help`.
+`tts <text>`, `ask <text>` (alias `provider`), `flow <nodeId>` (jump the NO-AI
+flow), `wake`, `stop`, `help`.
 
 ### Drive the avatar from a host page (postMessage)
 
@@ -486,6 +617,88 @@ avatarIframe.contentWindow.postMessage(
 ```
 
 The library replies with `{ source: 'ania-reply', cmd, result }`.
+
+---
+
+## Avatar Configurator (dev tool)
+
+The library ships its own configuration UI. Render `<AvatarConfigurator>` to
+tune the avatar live — position, size, theme, animation speeds/delays, TTS
+provider/voice/rate/pitch, STT, chat names/greeting — and **export the tuned
+props as JSX or JSON** with one click. It's a developer tool: gate it behind a
+dev/staging flag (e.g. `?config`), not an end-user surface.
+
+> _Screenshot placeholder — panel (collapsible Avatar / Layout / Animation / TTS
+> / STT / Chat sections) on the left, the live avatar it controls on the right._
+
+```jsx
+import { AvatarConfigurator } from 'ania-avatar-react';
+```
+
+Only props that DIFFER from their defaults are exported, so the copied snippet
+stays minimal. The last config is persisted to `localStorage` (namespaced key,
+with a **Reset** button). Importing it is optional and tree-shakeable — apps
+that never reference it ship none of its code, and it is SSR-safe.
+
+### (a) Batteries-included — the panel renders the avatar
+
+Fastest way to eyeball a config: the configurator renders the `<AvatarChatbot>`
+itself next to the controls.
+
+```jsx
+<AvatarConfigurator avatarUrl="https://example.com/avatar.ania" />
+```
+
+Any `AvatarChatbot` prop can be passed inline as a starting value (panel-owned
+props seed the fields; everything else — `plugins`, `flow`, callbacks — flows
+through to the previewed avatar untouched).
+
+### (b) Controlled — your app renders its own avatar
+
+Drive the config from your own state and render the avatar yourself:
+
+```jsx
+import { useState } from 'react';
+import { AvatarConfigurator, AvatarChatbot } from 'ania-avatar-react';
+
+function Tuner() {
+  const [config, setConfig] = useState({ avatarUrl: 'https://example.com/avatar.ania' });
+  return (
+    <div style={{ display: 'flex', gap: 24 }}>
+      <AvatarConfigurator value={config} onChange={setConfig} />
+      <AvatarChatbot {...config} />
+    </div>
+  );
+}
+```
+
+### Props
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `value` | `Partial<AvatarChatbotProps>` | - | Controlled config (with `onChange`) |
+| `onChange` | `(config) => void` | - | Controlled setter, fired on every edit |
+| `defaultValue` | `Partial<AvatarChatbotProps>` | - | Uncontrolled initial config |
+| `storageKey` | `string` | `'ania-avatar-configurator'` | localStorage namespace |
+| `persist` | `boolean` | `true` | Persist config to localStorage |
+| `showPreview` | `boolean` | `!controlled` | Render the avatar preview beside the panel |
+| `exportComponentName` | `string` | `'AvatarChatbot'` | Name used in the exported JSX |
+| `onExport` | `(props) => void` | - | Fired with the export-ready prop map on change |
+| `layout` | `'row'` \| `'column'` | `'row'` | Preview layout |
+
+Any other `AvatarChatbot` prop passed inline seeds the config (if the panel owns
+it) or passes through to the preview.
+
+The pure serializers are exported too, so you can build your own export UI or
+snapshot configs in tests without mounting the component:
+
+```jsx
+import { configuratorToJSX, configuratorToJSON, configuratorExportProps } from 'ania-avatar-react';
+
+configuratorToJSX({ avatarUrl: '/a.ania', theme: 'blue' }); // '<AvatarChatbot\n  avatarUrl="/a.ania"\n  theme="blue"\n/>'
+```
+
+A build-free playground lives in [`examples/configurator/`](examples/configurator/).
 
 ---
 

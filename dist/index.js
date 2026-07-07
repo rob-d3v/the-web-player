@@ -1,5 +1,5 @@
 import { jsx, jsxs } from "react/jsx-runtime";
-import { forwardRef, createElement, useMemo, useRef, useState, useEffect, useCallback, useReducer } from "react";
+import { forwardRef, createElement, useMemo, useRef, useImperativeHandle, useState, useEffect, useCallback, useReducer } from "react";
 import { createPortal } from "react-dom";
 /**
  * @license lucide-react v0.460.0 - ISC
@@ -11997,6 +11997,27 @@ function createTranslator(locale = DEFAULT_LOCALE, override) {
     list: (key) => getStringList(key, locale, { override })
   };
 }
+function isPlainMarketAnia(data) {
+  try {
+    const bytes = new Uint8Array(data);
+    let offset = 0;
+    const magic = String.fromCharCode(...bytes.slice(offset, offset + 4));
+    offset += 4;
+    if (magic !== "ANIA") return false;
+    const version = String.fromCharCode(...bytes.slice(offset, offset + 3));
+    offset += 3;
+    if (version !== "3.0") return false;
+    const nextByte = bytes[offset];
+    if (nextByte >= 97 && nextByte <= 122) {
+      offset += 1;
+    }
+    const header = bytes.slice(offset, offset + 64);
+    if (header.length < 64) return false;
+    return header.every((b) => b === 0);
+  } catch {
+    return false;
+  }
+}
 async function decryptAniaFile(encryptedData, password) {
   try {
     let bytes = new Uint8Array(encryptedData);
@@ -12303,7 +12324,7 @@ const buildOpennessMap = (keyframes, talkLow, talkHigh) => {
   }
   return result;
 };
-const AniaAvatar = ({
+const AniaAvatar = forwardRef(({
   avatarUrl,
   avatarPassword,
   avatarData: externalAvatarData,
@@ -12328,6 +12349,12 @@ const AniaAvatar = ({
   preserveQuality = true,
   /** Força o avatar sempre acima de todos os outros elementos (default: true) */
   alwaysOnTop = true,
+  /**
+   * Renderiza embutido no fluxo do componente pai (position: relative, sem
+   * portal para o body) em vez do widget flutuante fixo. Útil para páginas de
+   * teste/galeria que mostram o avatar dentro de um painel próprio.
+   */
+  inline = false,
   // Mobile-friendly props
   mobileMinimizedSize = 60,
   draggable = true,
@@ -12360,13 +12387,14 @@ const AniaAvatar = ({
   onClose,
   onToggleMinimize,
   children
-}) => {
+}, ref) => {
   const tr2 = useMemo(
     () => createTranslator(locale, messagesOverride || void 0),
     [locale, messagesOverride]
   );
   const containerRef = useRef(null);
   const playerRef = useRef(null);
+  useImperativeHandle(ref, () => ({ playerRef }), []);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -12633,11 +12661,11 @@ const AniaAvatar = ({
               throw new Error(`Failed to load avatar: ${response.status} ${response.statusText}`);
             }
             if (avatarUrl.endsWith(".ania")) {
-              if (avatarPassword === void 0 || avatarPassword === null) {
+              const encryptedData = await response.arrayBuffer();
+              if ((avatarPassword === void 0 || avatarPassword === null) && !isPlainMarketAnia(encryptedData)) {
                 throw new Error(tr2.t("avatar.error.passwordRequired"));
               }
-              const encryptedData = await response.arrayBuffer();
-              avatarData = await decryptAniaFile(encryptedData, avatarPassword);
+              avatarData = await decryptAniaFile(encryptedData, avatarPassword ?? "");
               await setCachedAvatar(avatarUrl, avatarData, true);
             } else {
               avatarData = await response.json();
@@ -12656,6 +12684,13 @@ const AniaAvatar = ({
           const optimalSpeeds = calculateOptimalSpeeds(detectedFps);
           finalIdleSpeed = optimalSpeeds.idle;
           finalTalkSpeed = optimalSpeeds.talk;
+        }
+        const fileAnim = avatarData.animation || {};
+        if (typeof fileAnim.idleSpeedSliderValue === "number" && fileAnim.idleSpeedSliderValue > 0) {
+          finalIdleSpeed = fileAnim.idleSpeedSliderValue;
+        }
+        if (typeof fileAnim.talkSpeedSliderValue === "number" && fileAnim.talkSpeedSliderValue > 0) {
+          finalTalkSpeed = fileAnim.talkSpeedSliderValue;
         }
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
         let canvasWidth = width;
@@ -12729,22 +12764,29 @@ const AniaAvatar = ({
           configState,
           avatarData.video.frames.length
         );
+        player.animationController.displacementTarget = containerRef.current || player.canvas;
         if (avatarData.actions && avatarData.actions.length > 0 && player.animationController.configureActions) {
           player.animationController.configureActions(avatarData.actions);
         } else if (actions && actions.length > 0 && player.animationController.configureActions) {
           player.animationController.configureActions(actions);
         }
-        if (lipSyncEnabled && player.animationController.configureLipsSync) {
+        const fileLipsync = avatarData.lipsync || null;
+        const fileTuning = fileLipsync && fileLipsync.tuning || null;
+        const fileOpennessMap = fileLipsync && Array.isArray(fileLipsync.opennessMap) && fileLipsync.opennessMap.length > 0 ? fileLipsync.opennessMap : null;
+        const lipSyncActive = lipSyncEnabled || !!fileOpennessMap;
+        if (lipSyncActive && player.animationController.configureLipsSync) {
           const applyLipSync = (lipConfig) => {
             const talkLow = Math.floor(avatarData.animation && avatarData.animation.talkRangeLowValue || 327);
             const talkHigh = Math.floor(avatarData.animation && avatarData.animation.talkRangeHighValue || 834);
-            const openMap = lipConfig && lipConfig.lips_sync_keyframes ? buildOpennessMap(lipConfig.lips_sync_keyframes, talkLow, talkHigh) : null;
-            const sustainStyle = lipSyncSustainStyle || lipConfig && lipConfig.lips_sync_sustain_style || "wiggle";
-            const wiggleSpeed = lipSyncWiggleSpeed != null ? lipSyncWiggleSpeed : lipConfig && lipConfig.lips_sync_wiggle_speed || 5;
+            const openMap = lipConfig && lipConfig.lips_sync_keyframes ? buildOpennessMap(lipConfig.lips_sync_keyframes, talkLow, talkHigh) : fileOpennessMap;
+            const sustainStyle = lipSyncSustainStyle || fileTuning && fileTuning.sustainStyle || lipConfig && lipConfig.lips_sync_sustain_style || "wiggle";
+            const wiggleSpeed = lipSyncWiggleSpeed != null ? lipSyncWiggleSpeed : fileTuning && fileTuning.wiggleSpeed != null ? fileTuning.wiggleSpeed : lipConfig && lipConfig.lips_sync_wiggle_speed || 5;
+            const intensity = fileTuning && fileTuning.intensity != null ? fileTuning.intensity : lipConfig && lipConfig.lips_sync_sync_intensity || lipSyncIntensity;
+            const responsiveness = fileTuning && fileTuning.responsiveness != null ? fileTuning.responsiveness : lipConfig && lipConfig.lips_sync_responsiveness || lipSyncResponsiveness;
             player.animationController.configureLipsSync(
               true,
-              lipConfig && lipConfig.lips_sync_sync_intensity || lipSyncIntensity,
-              lipConfig && lipConfig.lips_sync_responsiveness || lipSyncResponsiveness,
+              intensity,
+              responsiveness,
               openMap,
               sustainStyle,
               wiggleSpeed
@@ -12950,12 +12992,12 @@ const AniaAvatar = ({
   const getContainerStyle = () => {
     const isMobileSheet = isMobile && !isMinimized && !!children;
     const baseStyle = {
-      position: "fixed",
+      position: inline ? "relative" : "fixed",
       transition: "all 0.3s ease",
       // The widget must NOT inherit the host page's font (a serif host page
       // makes the chat look broken). Own stack, own base color.
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-      ...!(dragPosition && isMinimized) ? positionStyles[position] : {},
+      ...!inline && !(dragPosition && isMinimized) ? positionStyles[position] : {},
       ...isMobileSheet ? { left: "8px", right: "8px", bottom: "8px", top: "auto" } : {},
       ...isMobileMinimized ? {
         borderRadius: "9999px",
@@ -13138,11 +13180,14 @@ const AniaAvatar = ({
       )
     }
   );
+  if (inline) {
+    return avatarNode;
+  }
   if (typeof document !== "undefined" && document.body) {
     return createPortal(avatarNode, document.body);
   }
   return avatarNode;
-};
+});
 const escapeXml = (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 const professionalTTSRequest = async (text, provider, config) => {
   try {
@@ -14648,7 +14693,7 @@ function persistStore() {
   }
   return null;
 }
-function loadPersisted(key) {
+function loadPersisted$1(key) {
   const store = persistStore();
   if (!store || !key) return null;
   try {
@@ -14665,7 +14710,7 @@ function loadPersisted(key) {
     return null;
   }
 }
-function savePersisted(key, payload) {
+function savePersisted$1(key, payload) {
   const store = persistStore();
   if (!store || !key) return;
   try {
@@ -14710,7 +14755,7 @@ function useFlowEngine(flowDef, deps = {}) {
   }, [persistKey, appId, flowDef]);
   const persistedRef = useRef(void 0);
   if (persistedRef.current === void 0) {
-    persistedRef.current = persist ? loadPersisted(storageKey) : null;
+    persistedRef.current = persist ? loadPersisted$1(storageKey) : null;
   }
   const seed = useMemo(() => {
     const restored = persist && persistedRef.current && persistedRef.current.collected || {};
@@ -14900,7 +14945,7 @@ function useFlowEngine(flowDef, deps = {}) {
       return;
     }
     if (!state.collected || Object.keys(state.collected).length === 0) return;
-    savePersisted(storageKey, {
+    savePersisted$1(storageKey, {
       sessionId: sessionIdRef.current,
       collected: state.collected,
       currentNodeId: state.currentNodeId
@@ -18059,6 +18104,520 @@ const AvatarChatbot = ({
     }
   );
 };
+const SECTIONS = [
+  {
+    id: "avatar",
+    label: "Avatar",
+    fields: [
+      { key: "avatarUrl", label: "Avatar URL", type: "text", def: "", placeholder: "https://…/avatar.ania" },
+      { key: "avatarPassword", label: "Avatar password", type: "password", def: "" },
+      { key: "authToken", label: "Auth token (Bearer)", type: "password", def: "" },
+      { key: "preserveQuality", label: "Preserve quality", type: "boolean", def: true }
+    ]
+  },
+  {
+    id: "layout",
+    label: "Layout",
+    fields: [
+      { key: "position", label: "Position", type: "select", def: "bottom-right", options: ["bottom-right", "bottom-left", "top-right", "top-left"] },
+      { key: "width", label: "Width (px)", type: "number", def: 400, min: 80, max: 1200, step: 10 },
+      { key: "height", label: "Height (px)", type: "number", def: 300, min: 80, max: 1200, step: 10 },
+      { key: "theme", label: "Theme", type: "select", def: "dark", options: ["dark", "light", "blue", "purple"] },
+      { key: "transparent", label: "Transparent avatar bg", type: "boolean", def: false },
+      { key: "transparentChat", label: "Transparent chat bg", type: "boolean", def: false },
+      { key: "startMinimized", label: "Start minimized", type: "boolean", def: false },
+      { key: "alwaysOnTop", label: "Always on top", type: "boolean", def: true }
+    ]
+  },
+  {
+    id: "animation",
+    label: "Animation",
+    fields: [
+      { key: "autoCalculateSpeed", label: "Auto-calculate speed", type: "boolean", def: true },
+      { key: "idleSpeed", label: "Idle speed", type: "number", def: 1, min: 0.1, max: 5, step: 0.1 },
+      { key: "talkSpeed", label: "Talk speed", type: "number", def: 1, min: 0.1, max: 5, step: 0.1 },
+      { key: "showSpeedControls", label: "Show speed controls", type: "boolean", def: false },
+      { key: "talkStartDelay", label: "Talk start delay (ms)", type: "number", def: 0, min: 0, max: 5e3, step: 50 },
+      { key: "postTalkDelay", label: "Post-talk delay (ms)", type: "number", def: 1500, min: 0, max: 1e4, step: 50 },
+      { key: "minTalkDuration", label: "Min talk duration (ms)", type: "number", def: 800, min: 0, max: 1e4, step: 50 },
+      { key: "minIdleDuration", label: "Min idle duration (ms)", type: "number", def: 400, min: 0, max: 1e4, step: 50 }
+    ]
+  },
+  {
+    id: "tts",
+    label: "TTS (Text-to-Speech)",
+    fields: [
+      { key: "enableTTS", label: "Enable TTS", type: "boolean", def: true },
+      { key: "ttsProvider", label: "Provider", type: "select", def: "browser", options: ["browser", "tiktok", "elevenlabs", "google", "azure", "piper"] },
+      { key: "ttsLang", label: "Language", type: "text", def: "pt-BR", placeholder: "pt-BR" },
+      { key: "ttsVoice", label: "Voice (browser)", type: "text", def: "auto" },
+      { key: "ttsVoiceId", label: "Voice ID (cloud)", type: "text", def: "" },
+      { key: "ttsGender", label: "Gender", type: "select", def: "auto", options: ["auto", "male", "female"] },
+      { key: "ttsRate", label: "Rate", type: "number", def: 1, min: 0.5, max: 2, step: 0.05 },
+      { key: "ttsPitch", label: "Pitch", type: "number", def: 1, min: 0.5, max: 2, step: 0.05 },
+      { key: "ttsApiKey", label: "API key (cloud)", type: "password", def: "" },
+      { key: "ttsApiUrl", label: "Custom API URL", type: "text", def: "" },
+      { key: "ttsModel", label: "Model (ElevenLabs, …)", type: "text", def: "" },
+      // Piper (browser ONNX)
+      { key: "piperModelUrl", label: "Piper model URL", type: "text", def: "", placeholder: "https://…/model.onnx" },
+      { key: "piperModelConfigUrl", label: "Piper model config URL", type: "text", def: "", placeholder: "https://…/model.onnx.json" },
+      { key: "piperPitch", label: "Piper pitch", type: "number", def: 1, min: 0.75, max: 1.3, step: 0.05 },
+      { key: "piperSpeed", label: "Piper speed", type: "number", def: 1, min: 0.75, max: 1.3, step: 0.05 }
+    ]
+  },
+  {
+    id: "stt",
+    label: "STT (Speech-to-Text)",
+    fields: [
+      { key: "enableSTT", label: "Enable STT", type: "boolean", def: false },
+      { key: "sttProvider", label: "Provider", type: "select", def: "browser", options: ["browser", "google"] },
+      { key: "sttLang", label: "Language", type: "text", def: "pt-BR" },
+      { key: "sttContinuous", label: "Continuous listening", type: "boolean", def: false },
+      { key: "sttInterimResults", label: "Interim results", type: "boolean", def: true },
+      { key: "sttAutoSend", label: "Auto-send phrase", type: "boolean", def: true },
+      { key: "sttApiKey", label: "API key (Google)", type: "password", def: "" },
+      { key: "sttApiUrl", label: "Custom API URL", type: "text", def: "" }
+    ]
+  },
+  {
+    id: "chat",
+    label: "Chat",
+    fields: [
+      { key: "webhookUrl", label: "Webhook URL", type: "text", def: "", placeholder: "https://n8n.example.com/webhook/…" },
+      { key: "webhookApiKey", label: "Webhook API key", type: "password", def: "" },
+      { key: "assistantName", label: "Assistant name", type: "text", def: "Assistant" },
+      { key: "userName", label: "User name", type: "text", def: "You" },
+      { key: "autoGreeting", label: "Auto greeting", type: "boolean", def: true },
+      { key: "enableAttachments", label: "Enable attachments", type: "boolean", def: false },
+      { key: "locale", label: "Locale", type: "text", def: "pt-BR", placeholder: "pt-BR | en | es …" }
+    ]
+  }
+];
+const FIELD_BY_KEY = SECTIONS.reduce((acc, s) => {
+  for (const f of s.fields) acc[f.key] = f;
+  return acc;
+}, {});
+const DEFAULT_STORAGE_KEY = "ania-avatar-configurator";
+function buildDefaults() {
+  const out = {};
+  for (const section of SECTIONS) {
+    for (const f of section.fields) out[f.key] = f.def;
+  }
+  return out;
+}
+function toExportProps(config) {
+  const out = {};
+  for (const key of Object.keys(FIELD_BY_KEY)) {
+    const f = FIELD_BY_KEY[key];
+    const v = config[key];
+    if (v === void 0 || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    if (v === f.def) continue;
+    out[key] = v;
+  }
+  return out;
+}
+function toJSX(config, componentName = "AvatarChatbot") {
+  const props = toExportProps(config);
+  const keys = Object.keys(props);
+  if (keys.length === 0) return `<${componentName} />`;
+  const lines = keys.map((k) => {
+    const v = props[k];
+    if (typeof v === "string") return `  ${k}="${v.replace(/"/g, "&quot;")}"`;
+    if (typeof v === "boolean") return v ? `  ${k}` : `  ${k}={false}`;
+    return `  ${k}={${JSON.stringify(v)}}`;
+  });
+  return `<${componentName}
+${lines.join("\n")}
+/>`;
+}
+function toJSON(config) {
+  return JSON.stringify(toExportProps(config), null, 2);
+}
+function loadPersisted(key) {
+  if (typeof window === "undefined" || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+function savePersisted(key, value) {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+  }
+}
+function clearPersisted(key) {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+  }
+}
+function useConfiguratorStyles() {
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const id2 = "ania-configurator-styles";
+    if (document.getElementById(id2)) return;
+    const style = document.createElement("style");
+    style.id = id2;
+    style.textContent = ".ania-cfg-field:focus{outline:none;border-color:#6366f1 !important;box-shadow:0 0 0 3px rgba(99,102,241,0.25) !important;}.ania-cfg-btn{transition:background-color .12s ease,transform .12s ease;}.ania-cfg-btn:hover{filter:brightness(1.08);}.ania-cfg-btn:active{transform:scale(0.97);}.ania-cfg-section-hdr{transition:background-color .12s ease;}.ania-cfg-section-hdr:hover{background:rgba(99,102,241,0.12);}.ania-cfg-scroll{scrollbar-width:thin;scrollbar-color:rgba(100,116,139,0.4) transparent;}.ania-cfg-scroll::-webkit-scrollbar{width:8px;}.ania-cfg-scroll::-webkit-scrollbar-thumb{background:rgba(100,116,139,0.4);border-radius:999px;}";
+    document.head.appendChild(style);
+  }, []);
+}
+const S = {
+  panel: {
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+    fontSize: 13,
+    color: "#e2e8f0",
+    background: "#0f172a",
+    border: "1px solid #1e293b",
+    borderRadius: 12,
+    width: 340,
+    maxWidth: "100%",
+    maxHeight: "90vh",
+    display: "flex",
+    flexDirection: "column",
+    boxShadow: "0 12px 40px rgba(0,0,0,0.4)",
+    boxSizing: "border-box"
+  },
+  header: {
+    padding: "12px 14px",
+    borderBottom: "1px solid #1e293b",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8
+  },
+  title: { fontSize: 14, fontWeight: 600, margin: 0, color: "#f8fafc" },
+  scrollArea: { overflowY: "auto", padding: "6px 0", flex: 1 },
+  sectionHdr: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "9px 14px",
+    cursor: "pointer",
+    userSelect: "none",
+    fontWeight: 600,
+    color: "#cbd5e1",
+    background: "transparent",
+    border: "none",
+    width: "100%",
+    textAlign: "left",
+    fontSize: 13
+  },
+  sectionBody: { padding: "2px 14px 10px" },
+  field: { marginBottom: 10 },
+  fieldLabel: { display: "block", marginBottom: 4, color: "#94a3b8", fontSize: 12 },
+  input: {
+    width: "100%",
+    boxSizing: "border-box",
+    background: "#1e293b",
+    color: "#e2e8f0",
+    border: "1px solid #334155",
+    borderRadius: 8,
+    padding: "7px 9px",
+    fontSize: 13,
+    fontFamily: "inherit"
+  },
+  checkboxRow: { display: "flex", alignItems: "center", gap: 8 },
+  footer: {
+    padding: 12,
+    borderTop: "1px solid #1e293b",
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8
+  },
+  btn: {
+    flex: "1 1 auto",
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid #334155",
+    background: "#1e293b",
+    color: "#e2e8f0",
+    cursor: "pointer",
+    fontSize: 12.5,
+    fontWeight: 600,
+    fontFamily: "inherit"
+  },
+  btnPrimary: { background: "#4f46e5", borderColor: "#4f46e5", color: "#fff" }
+};
+function Field({ field, value, onChange }) {
+  const id2 = `ania-cfg-${field.key}`;
+  if (field.type === "boolean") {
+    return /* @__PURE__ */ jsxs("label", { htmlFor: id2, style: { ...S.field, ...S.checkboxRow, cursor: "pointer" }, children: [
+      /* @__PURE__ */ jsx(
+        "input",
+        {
+          id: id2,
+          type: "checkbox",
+          checked: !!value,
+          onChange: (e) => onChange(field.key, e.target.checked),
+          style: { width: 16, height: 16, accentColor: "#4f46e5", cursor: "pointer" }
+        }
+      ),
+      /* @__PURE__ */ jsx("span", { style: { color: "#cbd5e1", fontSize: 13 }, children: field.label })
+    ] });
+  }
+  if (field.type === "select") {
+    return /* @__PURE__ */ jsxs("div", { style: S.field, children: [
+      /* @__PURE__ */ jsx("label", { htmlFor: id2, style: S.fieldLabel, children: field.label }),
+      /* @__PURE__ */ jsx(
+        "select",
+        {
+          id: id2,
+          className: "ania-cfg-field",
+          value: value ?? field.def,
+          onChange: (e) => onChange(field.key, e.target.value),
+          style: S.input,
+          children: field.options.map((opt) => /* @__PURE__ */ jsx("option", { value: opt, children: opt }, opt))
+        }
+      )
+    ] });
+  }
+  if (field.type === "number") {
+    return /* @__PURE__ */ jsxs("div", { style: S.field, children: [
+      /* @__PURE__ */ jsx("label", { htmlFor: id2, style: S.fieldLabel, children: field.label }),
+      /* @__PURE__ */ jsx(
+        "input",
+        {
+          id: id2,
+          className: "ania-cfg-field",
+          type: "number",
+          value: value ?? "",
+          min: field.min,
+          max: field.max,
+          step: field.step,
+          onChange: (e) => {
+            const raw = e.target.value;
+            onChange(field.key, raw === "" ? field.def : Number(raw));
+          },
+          style: S.input
+        }
+      )
+    ] });
+  }
+  return /* @__PURE__ */ jsxs("div", { style: S.field, children: [
+    /* @__PURE__ */ jsx("label", { htmlFor: id2, style: S.fieldLabel, children: field.label }),
+    /* @__PURE__ */ jsx(
+      "input",
+      {
+        id: id2,
+        className: "ania-cfg-field",
+        type: field.type === "password" ? "password" : "text",
+        value: value ?? "",
+        placeholder: field.placeholder || "",
+        autoComplete: "off",
+        onChange: (e) => onChange(field.key, e.target.value),
+        style: S.input
+      }
+    )
+  ] });
+}
+function Section({ section, config, onChange, open, onToggle }) {
+  return /* @__PURE__ */ jsxs("div", { style: { borderBottom: "1px solid #1e293b" }, children: [
+    /* @__PURE__ */ jsxs(
+      "button",
+      {
+        type: "button",
+        className: "ania-cfg-section-hdr",
+        style: S.sectionHdr,
+        onClick: onToggle,
+        "aria-expanded": open,
+        children: [
+          /* @__PURE__ */ jsx("span", { children: section.label }),
+          /* @__PURE__ */ jsx("span", { style: { color: "#64748b", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }, children: "▸" })
+        ]
+      }
+    ),
+    open && /* @__PURE__ */ jsx("div", { style: S.sectionBody, children: section.fields.map((f) => /* @__PURE__ */ jsx(Field, { field: f, value: config[f.key], onChange }, f.key)) })
+  ] });
+}
+const AvatarConfigurator = ({
+  // Controlled mode
+  value,
+  onChange,
+  // Uncontrolled initial config (also accepts any AvatarChatbot prop as a seed
+  // for batteries-included mode, e.g. avatarUrl="…").
+  defaultValue,
+  // localStorage namespace. Set persist={false} to disable persistence.
+  storageKey = DEFAULT_STORAGE_KEY,
+  persist = true,
+  // When true (default when NOT controlled), render the AvatarChatbot itself
+  // next to the panel. Set false to only render the panel.
+  showPreview,
+  // Component name used in the exported JSX snippet.
+  exportComponentName = "AvatarChatbot",
+  // Fired with the export-ready (defaults-stripped) prop map on every change.
+  onExport,
+  // Layout: 'row' (panel + preview side by side) | 'column'.
+  layout = "row",
+  // Extra seed props merged into the initial config (batteries-included mode).
+  // Any AvatarChatbot prop not surfaced by the panel is passed through to the
+  // rendered avatar but not editable here.
+  ...seedProps
+}) => {
+  useConfiguratorStyles();
+  const isControlled = value !== void 0 && typeof onChange === "function";
+  const initial = useMemo(() => {
+    const base = buildDefaults();
+    const persisted = persist ? loadPersisted(storageKey) : null;
+    const seed = {};
+    for (const k of Object.keys(seedProps)) {
+      if (k in FIELD_BY_KEY) seed[k] = seedProps[k];
+    }
+    return { ...base, ...persisted || {}, ...seed, ...defaultValue || {} };
+  }, []);
+  const [internal, setInternal] = useState(initial);
+  const config = isControlled ? { ...buildDefaults(), ...value } : internal;
+  const passthrough = useMemo(() => {
+    const out = {};
+    for (const k of Object.keys(seedProps)) {
+      if (!(k in FIELD_BY_KEY)) out[k] = seedProps[k];
+    }
+    return out;
+  }, [seedProps]);
+  const [openSections, setOpenSections] = useState(() => ({ avatar: true, layout: true }));
+  const [copied, setCopied] = useState(null);
+  const copyResetRef = useRef(null);
+  const handleChange = useCallback(
+    (key, val) => {
+      if (isControlled) {
+        onChange({ ...value, [key]: val });
+      } else {
+        setInternal((prev) => ({ ...prev, [key]: val }));
+      }
+    },
+    [isControlled, onChange, value]
+  );
+  useEffect(() => {
+    if (persist && !isControlled) savePersisted(storageKey, config);
+    if (typeof onExport === "function") onExport(toExportProps(config));
+  }, [config]);
+  const doCopy = useCallback(async (kind) => {
+    const text = kind === "jsx" ? toJSX(config, exportComponentName) : toJSON(config);
+    let ok = false;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    }
+    if (!ok && typeof document !== "undefined") {
+      try {
+        const ta2 = document.createElement("textarea");
+        ta2.value = text;
+        ta2.style.position = "fixed";
+        ta2.style.opacity = "0";
+        document.body.appendChild(ta2);
+        ta2.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta2);
+        ok = true;
+      } catch {
+        ok = false;
+      }
+    }
+    setCopied(ok ? kind : null);
+    if (copyResetRef.current) clearTimeout(copyResetRef.current);
+    copyResetRef.current = setTimeout(() => setCopied(null), 1600);
+  }, [config, exportComponentName]);
+  useEffect(() => () => {
+    if (copyResetRef.current) clearTimeout(copyResetRef.current);
+  }, []);
+  const handleReset = useCallback(() => {
+    const defaults = buildDefaults();
+    if (persist) clearPersisted(storageKey);
+    if (isControlled) onChange(defaults);
+    else setInternal(defaults);
+  }, [isControlled, onChange, persist, storageKey]);
+  const toggleSection = useCallback((id2) => {
+    setOpenSections((prev) => ({ ...prev, [id2]: !prev[id2] }));
+  }, []);
+  const shouldPreview = showPreview !== void 0 ? showPreview : !isControlled;
+  const panel = /* @__PURE__ */ jsxs("div", { style: S.panel, className: "ania-cfg-scroll", children: [
+    /* @__PURE__ */ jsxs("div", { style: S.header, children: [
+      /* @__PURE__ */ jsx("h3", { style: S.title, children: "Avatar Configurator" }),
+      /* @__PURE__ */ jsx(
+        "button",
+        {
+          type: "button",
+          className: "ania-cfg-btn",
+          style: { ...S.btn, flex: "0 0 auto", padding: "5px 9px" },
+          onClick: handleReset,
+          title: "Reset all fields to defaults",
+          children: "Reset"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ jsx("div", { style: S.scrollArea, className: "ania-cfg-scroll", children: SECTIONS.map((section) => /* @__PURE__ */ jsx(
+      Section,
+      {
+        section,
+        config,
+        onChange: handleChange,
+        open: !!openSections[section.id],
+        onToggle: () => toggleSection(section.id)
+      },
+      section.id
+    )) }),
+    /* @__PURE__ */ jsxs("div", { style: S.footer, children: [
+      /* @__PURE__ */ jsx(
+        "button",
+        {
+          type: "button",
+          className: "ania-cfg-btn",
+          style: { ...S.btn, ...S.btnPrimary },
+          onClick: () => doCopy("jsx"),
+          children: copied === "jsx" ? "Copied ✓" : "Copy JSX"
+        }
+      ),
+      /* @__PURE__ */ jsx(
+        "button",
+        {
+          type: "button",
+          className: "ania-cfg-btn",
+          style: S.btn,
+          onClick: () => doCopy("json"),
+          children: copied === "json" ? "Copied ✓" : "Copy JSON"
+        }
+      )
+    ] })
+  ] });
+  if (!shouldPreview) return panel;
+  const remountKey = [
+    config.avatarUrl,
+    config.avatarPassword,
+    config.ttsProvider,
+    config.sttProvider,
+    config.piperModelUrl
+  ].join("|");
+  return /* @__PURE__ */ jsxs(
+    "div",
+    {
+      style: {
+        display: "flex",
+        flexDirection: layout === "column" ? "column" : "row",
+        gap: 16,
+        alignItems: "flex-start",
+        flexWrap: "wrap"
+      },
+      children: [
+        panel,
+        /* @__PURE__ */ jsx("div", { style: { flex: "1 1 320px", minWidth: 280, position: "relative" }, children: /* @__PURE__ */ jsx(AvatarChatbot, { ...config, ...passthrough }, remountKey) })
+      ]
+    }
+  );
+};
+AvatarConfigurator.toJSX = toJSX;
+AvatarConfigurator.toJSON = toJSON;
+AvatarConfigurator.toExportProps = toExportProps;
+AvatarConfigurator.SECTIONS = SECTIONS;
 const useAniaAvatarRef = () => {
   const ref = useRef(null);
   const getPlayer = () => {
@@ -18132,8 +18691,10 @@ const useAniaAvatarRef = () => {
 export {
   AniaAvatar,
   AvatarChatbot,
+  AvatarConfigurator,
   BUILTIN_PLUGINS,
   COMMAND_LIST,
+  SECTIONS as CONFIGURATOR_SECTIONS,
   DEFAULT_LOCALE,
   FALLBACK_LOCALE,
   PLUGIN_KINDS,
@@ -18146,6 +18707,9 @@ export {
   buildOpennessMap,
   checkPiperStatus,
   clearAvatarCache,
+  toExportProps as configuratorExportProps,
+  toJSON as configuratorToJSON,
+  toJSX as configuratorToJSX,
   createTranslator,
   deleteCachedAvatar,
   disposePiper,

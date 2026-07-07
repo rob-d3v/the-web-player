@@ -1,15 +1,18 @@
 import { jsx, jsxs } from 'react/jsx-runtime';
-import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { Maximize2, Minimize2, X } from 'lucide-react';
 import { THEMES } from '../constants/themes.js';
 import { createTranslator } from '../i18n/index.js';
-import { decryptAniaFile } from '../utils/crypto.js';
+import { decryptAniaFile, isPlainMarketAnia } from '../utils/crypto.js';
 import { calculateOptimalSpeeds } from '../utils/speed-calculator.js';
 import { getCachedAvatar, setCachedAvatar } from '../utils/avatar-cache.js';
 import { fetchLipSyncConfig, buildOpennessMap } from '../services/lip-sync-api.js';
 
-export const AniaAvatar = ({
+// forwardRef: useAniaAvatarRef expects `ref.current.playerRef` — without the
+// wrapper, React strips `ref` from function components and the hook's
+// setTalking/triggerAction/cancelAction silently no-op on the plain player.
+export const AniaAvatar = forwardRef(({
   avatarUrl,
   avatarPassword,
   avatarData: externalAvatarData,
@@ -34,6 +37,12 @@ export const AniaAvatar = ({
   preserveQuality = true,
   /** Força o avatar sempre acima de todos os outros elementos (default: true) */
   alwaysOnTop = true,
+  /**
+   * Renderiza embutido no fluxo do componente pai (position: relative, sem
+   * portal para o body) em vez do widget flutuante fixo. Útil para páginas de
+   * teste/galeria que mostram o avatar dentro de um painel próprio.
+   */
+  inline = false,
   // Mobile-friendly props
   mobileMinimizedSize = 60,
   draggable = true,
@@ -66,7 +75,7 @@ export const AniaAvatar = ({
   onClose,
   onToggleMinimize,
   children
-}) => {
+}, ref) => {
   // i18n translator (memoised on locale + override).
   const tr = useMemo(
     () => createTranslator(locale, messagesOverride || undefined),
@@ -75,6 +84,8 @@ export const AniaAvatar = ({
 
   const containerRef = useRef(null);
   const playerRef = useRef(null);
+  // Contract used by useAniaAvatarRef: ref.current.playerRef.current = player.
+  useImperativeHandle(ref, () => ({ playerRef }), []);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -390,11 +401,13 @@ export const AniaAvatar = ({
             }
 
             if (avatarUrl.endsWith(".ania")) {
-              if (avatarPassword === undefined || avatarPassword === null) {
+              const encryptedData = await response.arrayBuffer();
+              // MARKET v3.0 files are plain JSON — openable without a password,
+              // so only require one when the file is actually encrypted.
+              if ((avatarPassword === undefined || avatarPassword === null) && !isPlainMarketAnia(encryptedData)) {
                 throw new Error(tr.t("avatar.error.passwordRequired"));
               }
-              const encryptedData = await response.arrayBuffer();
-              avatarData = await decryptAniaFile(encryptedData, avatarPassword);
+              avatarData = await decryptAniaFile(encryptedData, avatarPassword ?? "");
 
               await setCachedAvatar(avatarUrl, avatarData, true);
             } else {
@@ -415,6 +428,17 @@ export const AniaAvatar = ({
           const optimalSpeeds = calculateOptimalSpeeds(detectedFps);
           finalIdleSpeed = optimalSpeeds.idle;
           finalTalkSpeed = optimalSpeeds.talk;
+        }
+        // Speeds authored into the .ania (web studio / desktop) carry the
+        // creator's intent and take precedence over host props and the fps
+        // heuristic — desktop-player parity. Files without the fields (all
+        // pre-studio avatars) keep the host-prop behavior above.
+        const fileAnim = avatarData.animation || {};
+        if (typeof fileAnim.idleSpeedSliderValue === 'number' && fileAnim.idleSpeedSliderValue > 0) {
+          finalIdleSpeed = fileAnim.idleSpeedSliderValue;
+        }
+        if (typeof fileAnim.talkSpeedSliderValue === 'number' && fileAnim.talkSpeedSliderValue > 0) {
+          finalTalkSpeed = fileAnim.talkSpeedSliderValue;
         }
 
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
@@ -494,6 +518,13 @@ export const AniaAvatar = ({
           configState,
           avatarData.video.frames.length
         );
+        // Action displacement moves (action.displacements[] in the .ania)
+        // translate the avatar container while the action plays (browser
+        // equivalent of the desktop's OS-window nudge). Target the container
+        // div, NOT the canvas: enforceCanvasStyles() strips/overrides the
+        // canvas transform on every style mutation. Consumed by the modern
+        // player bundle; older bundles ignore the field.
+        player.animationController.displacementTarget = containerRef.current || player.canvas;
         // Configure action frames from avatar data
         if (avatarData.actions && avatarData.actions.length > 0 && player.animationController.configureActions) {
           player.animationController.configureActions(avatarData.actions);
@@ -501,27 +532,46 @@ export const AniaAvatar = ({
           player.animationController.configureActions(actions);
         }
 
-        // Configure lip sync. Explicit props (lipSyncSustainStyle /
-        // lipSyncWiggleSpeed) always win over server config; server values are
-        // the fallback. Without a server URL we still configure local lip sync
-        // so the sustain knobs apply to audio-driven (FFT) lip sync.
-        if (lipSyncEnabled && player.animationController.configureLipsSync) {
+        // Configure lip sync. Priority per knob: explicit component props >
+        // values authored into the .ania (lipsync.opennessMap + lipsync.tuning,
+        // written by the web studio / desktop) > server config > defaults.
+        // A file that carries an authored opennessMap enables lip sync by
+        // itself even when the host didn't pass lipSyncEnabled — the creator
+        // tuned it. Without a server URL we still configure local lip sync so
+        // the knobs apply to audio-driven (FFT) lip sync.
+        const fileLipsync = avatarData.lipsync || null;
+        const fileTuning = (fileLipsync && fileLipsync.tuning) || null;
+        const fileOpennessMap =
+          fileLipsync && Array.isArray(fileLipsync.opennessMap) && fileLipsync.opennessMap.length > 0
+            ? fileLipsync.opennessMap
+            : null;
+        const lipSyncActive = lipSyncEnabled || !!fileOpennessMap;
+        if (lipSyncActive && player.animationController.configureLipsSync) {
           const applyLipSync = (lipConfig) => {
             const talkLow = Math.floor((avatarData.animation && avatarData.animation.talkRangeLowValue) || 327);
             const talkHigh = Math.floor((avatarData.animation && avatarData.animation.talkRangeHighValue) || 834);
             const openMap = (lipConfig && lipConfig.lips_sync_keyframes)
               ? buildOpennessMap(lipConfig.lips_sync_keyframes, talkLow, talkHigh)
-              : null;
+              : fileOpennessMap;
             const sustainStyle = lipSyncSustainStyle
+              || (fileTuning && fileTuning.sustainStyle)
               || (lipConfig && lipConfig.lips_sync_sustain_style)
               || 'wiggle';
             const wiggleSpeed = (lipSyncWiggleSpeed != null)
               ? lipSyncWiggleSpeed
-              : ((lipConfig && lipConfig.lips_sync_wiggle_speed) || 5);
+              : (fileTuning && fileTuning.wiggleSpeed != null)
+                ? fileTuning.wiggleSpeed
+                : ((lipConfig && lipConfig.lips_sync_wiggle_speed) || 5);
+            const intensity = (fileTuning && fileTuning.intensity != null)
+              ? fileTuning.intensity
+              : ((lipConfig && lipConfig.lips_sync_sync_intensity) || lipSyncIntensity);
+            const responsiveness = (fileTuning && fileTuning.responsiveness != null)
+              ? fileTuning.responsiveness
+              : ((lipConfig && lipConfig.lips_sync_responsiveness) || lipSyncResponsiveness);
             player.animationController.configureLipsSync(
               true,
-              (lipConfig && lipConfig.lips_sync_sync_intensity) || lipSyncIntensity,
-              (lipConfig && lipConfig.lips_sync_responsiveness) || lipSyncResponsiveness,
+              intensity,
+              responsiveness,
               openMap,
               sustainStyle,
               wiggleSpeed
@@ -759,12 +809,12 @@ export const AniaAvatar = ({
     // full viewport width instead of a squeezed column pinned to one side.
     const isMobileSheet = isMobile && !isMinimized && !!children;
     const baseStyle = {
-      position: 'fixed',
+      position: inline ? 'relative' : 'fixed',
       transition: 'all 0.3s ease',
       // The widget must NOT inherit the host page's font (a serif host page
       // makes the chat look broken). Own stack, own base color.
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-      ...(!(dragPosition && isMinimized) ? positionStyles[position] : {}),
+      ...(!inline && !(dragPosition && isMinimized) ? positionStyles[position] : {}),
       ...(isMobileSheet ? { left: '8px', right: '8px', bottom: '8px', top: 'auto' } : {}),
       ...(isMobileMinimized ? {
         borderRadius: '9999px',
@@ -957,9 +1007,13 @@ export const AniaAvatar = ({
     }
   );
 
+  // Modo embutido: renderiza no fluxo do pai, sem portal nem position fixed.
+  if (inline) {
+    return avatarNode;
+  }
   // Usa portal para renderizar diretamente no body, evitando qualquer stacking context pai
   if (typeof document !== 'undefined' && document.body) {
     return createPortal(avatarNode, document.body);
   }
   return avatarNode;
-};
+});

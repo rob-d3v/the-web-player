@@ -2,6 +2,17 @@
 export { AniaAvatar } from './components/AniaAvatar.jsx';
 export { AvatarChatbot } from './components/AvatarChatbot.jsx';
 
+// Configurator — developer-facing live config UI for <AvatarChatbot>.
+// Optional to import; tree-shakeable (consumers who never reference it pay
+// nothing). Exports the pure JSX/JSON serializers alongside the component.
+export {
+  AvatarConfigurator,
+  configuratorToJSX,
+  configuratorToJSON,
+  configuratorExportProps,
+  CONFIGURATOR_SECTIONS
+} from './components/AvatarConfigurator.jsx';
+
 // Hooks públicos
 export { useAniaAvatarRef } from './hooks/useAniaAvatarRef.js';
 export { useTTSDetection } from './hooks/useTTSDetection.js';

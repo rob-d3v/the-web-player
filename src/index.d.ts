@@ -64,6 +64,8 @@ export interface AniaAvatarProps {
   startMinimized?: boolean;
   preserveQuality?: boolean;
   alwaysOnTop?: boolean;
+  /** Render embedded in the parent flow (relative, no body portal) instead of the fixed floating widget. */
+  inline?: boolean;
   mobileMinimizedSize?: number;
   draggable?: boolean;
   mobileBreakpoint?: number;
@@ -645,6 +647,67 @@ export const FALLBACK_LOCALE: string;
 
 export function AniaAvatar(props: AniaAvatarProps): JSX.Element;
 export function AvatarChatbot(props: AvatarChatbotProps): JSX.Element;
+
+// ===== Configurator (developer-facing live config UI) =====
+
+/** Export-ready prop map: only props that differ from their defaults, with
+ *  empty strings / nulls dropped. Suitable for spreading onto <AvatarChatbot>. */
+export type ConfiguratorExportProps = Partial<AvatarChatbotProps>;
+
+export interface ConfiguratorField {
+  key: keyof AvatarChatbotProps | string;
+  label: string;
+  type: 'text' | 'password' | 'number' | 'boolean' | 'select';
+  def: any;
+  options?: string[];
+  placeholder?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export interface ConfiguratorSection {
+  id: string;
+  label: string;
+  fields: ConfiguratorField[];
+}
+
+export interface AvatarConfiguratorProps {
+  /** Controlled mode: the current config. Provide with `onChange`. */
+  value?: Partial<AvatarChatbotProps>;
+  /** Controlled mode: called with the next config on every edit. */
+  onChange?: (config: Partial<AvatarChatbotProps>) => void;
+  /** Uncontrolled initial config (merged over schema defaults + persisted state). */
+  defaultValue?: Partial<AvatarChatbotProps>;
+  /** localStorage namespace key. Default `'ania-avatar-configurator'`. */
+  storageKey?: string;
+  /** Persist config to localStorage (default true; ignored in controlled mode). */
+  persist?: boolean;
+  /** Render the <AvatarChatbot> preview alongside the panel. Defaults to true
+   *  in uncontrolled (batteries-included) mode, false when controlled. */
+  showPreview?: boolean;
+  /** Component name used in the exported JSX snippet. Default `'AvatarChatbot'`. */
+  exportComponentName?: string;
+  /** Fired with the export-ready (defaults-stripped) prop map on every change. */
+  onExport?: (props: ConfiguratorExportProps) => void;
+  /** Preview layout when showPreview is on. Default `'row'`. */
+  layout?: 'row' | 'column';
+  /** Any AvatarChatbot prop can be passed inline to seed the config
+   *  (panel-owned props) or pass through to the preview (everything else). */
+  [prop: string]: any;
+}
+
+export function AvatarConfigurator(props: AvatarConfiguratorProps): JSX.Element;
+
+/** Serialize a config to a formatted `<AvatarChatbot .../>` JSX string
+ *  (only non-default props). */
+export function configuratorToJSX(config: Partial<AvatarChatbotProps>, componentName?: string): string;
+/** Serialize a config to pretty JSON (only non-default props). */
+export function configuratorToJSON(config: Partial<AvatarChatbotProps>): string;
+/** Reduce a config to the export-ready prop map (defaults + empties stripped). */
+export function configuratorExportProps(config: Partial<AvatarChatbotProps>): ConfiguratorExportProps;
+/** The panel's field schema (sections + fields). */
+export const CONFIGURATOR_SECTIONS: ConfiguratorSection[];
 
 // ===== Hook Exports =====
 

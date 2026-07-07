@@ -1,3 +1,29 @@
+// v3.0 MARKET files are plain JSON: header carries all-zero HMAC/salt/IV and
+// the body is never AES-encrypted, so no password is needed to open them.
+// Mirrors the header walk in decryptAniaFile below.
+export function isPlainMarketAnia(data) {
+  try {
+    const bytes = new Uint8Array(data);
+    let offset = 0;
+    const magic = String.fromCharCode(...bytes.slice(offset, offset + 4));
+    offset += 4;
+    if (magic !== 'ANIA') return false;
+    const version = String.fromCharCode(...bytes.slice(offset, offset + 3));
+    offset += 3;
+    if (version !== '3.0') return false;
+    const nextByte = bytes[offset];
+    if (nextByte >= 97 && nextByte <= 122) {
+      offset += 1;
+    }
+    // hmac(32) + salt(16) + iv(16) — all zeros only on MARKET files
+    const header = bytes.slice(offset, offset + 64);
+    if (header.length < 64) return false;
+    return header.every((b) => b === 0);
+  } catch {
+    return false;
+  }
+}
+
 export async function decryptAniaFile(encryptedData, password) {
   var _a, _b;
   try {
