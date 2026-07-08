@@ -78,3 +78,7 @@ export {
   clearAvatarCache,
   getCacheStats
 } from './utils/avatar-cache.js';
+
+// Ready-made <AvatarChatbot> starting points (spread `.config` onto the widget
+// or into <AvatarConfigurator defaultValue={...}>).
+export { CHATBOT_TEMPLATES, CHATBOT_TEMPLATE_BY_ID } from './data/chatbot-templates.js';

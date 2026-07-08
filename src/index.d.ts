@@ -729,6 +729,28 @@ export function configuratorExportProps(config: Partial<AvatarChatbotProps>): Co
 /** The panel's field schema (sections + fields). */
 export const CONFIGURATOR_SECTIONS: ConfiguratorSection[];
 
+// ===== Chatbot Templates =====
+
+export interface ChatbotTemplate {
+  /** Stable id. */
+  id: string;
+  /** Human-friendly name. */
+  name: string;
+  /** Emoji glyph for cards/menus. */
+  emoji: string;
+  /** One-line description of the persona/use-case. */
+  description: string;
+  /** Partial AvatarChatbot props — spread onto the widget or a configurator. */
+  config: Partial<AvatarChatbotProps>;
+  /** Optional canned reply for the `onSendMessage` fake/mock provider. */
+  sampleReply?: string;
+}
+
+/** Ready-made <AvatarChatbot> starting points. */
+export const CHATBOT_TEMPLATES: ChatbotTemplate[];
+/** Templates keyed by id. */
+export const CHATBOT_TEMPLATE_BY_ID: Record<string, ChatbotTemplate>;
+
 // ===== Hook Exports =====
 
 export function useTTSDetection(options?: UseTTSDetectionOptions): UseTTSDetectionResult;

@@ -75,10 +75,12 @@ Full chatbot with avatar, TTS, STT, file uploads, and webhook integration.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `idleSpeed` | `number` | `1` | Idle animation speed multiplier |
-| `talkSpeed` | `number` | `1` | Talk animation speed multiplier |
-| `autoCalculateSpeed` | `boolean` | `true` | Auto-detect optimal speeds from FPS |
+| `idleSpeed` | `number` | *(unset)* | Idle animation speed multiplier. Set it to **override** the file's authored speed + FPS heuristic; applies live. Leave unset to keep the `.ania`'s own speed. |
+| `talkSpeed` | `number` | *(unset)* | Talk animation speed multiplier (same precedence as `idleSpeed`). |
+| `autoCalculateSpeed` | `boolean` | `true` | Auto-detect optimal speeds from FPS (used only when `idle/talkSpeed` are unset). |
 | `showSpeedControls` | `boolean` | `false` | Show speed adjustment sliders |
+
+> **Speed precedence** (low → high): `1` < FPS heuristic < speed authored in the `.ania` < explicit `idleSpeed`/`talkSpeed` prop. Changed in **1.11.0**: an explicit prop now wins and applies live (previously the file clobbered it).
 
 #### Chat Props
 
@@ -87,6 +89,7 @@ Full chatbot with avatar, TTS, STT, file uploads, and webhook integration.
 | `webhookUrl` | `string` | - | Webhook URL for chat messages |
 | `webhookApiKey` | `string` | - | API key (sent as `Bearer` + `X-API-Key`) |
 | `webhookHeaders` | `Record<string, string>` | `{}` | Custom headers for webhook |
+| `onSendMessage` | `(message, metadata) => string \| {message?,content?,text?,attachments?,action?} \| Promise<…>` | - | **New in 1.11.0.** Client-side responder — when set it **replaces** the webhook POST. Return the reply directly. Enables a fake/mock provider or a custom in-app AI client with no `webhookUrl`. |
 | `autoGreeting` | `boolean` | `true` | Auto greeting on load |
 | `assistantName` | `string` | `'Assistant'` | Name shown on bot messages |
 | `userName` | `string` | `'You'` | Name shown on user messages |
@@ -390,6 +393,7 @@ clearMessages();
 | `webhookUrl` | `string` | Webhook endpoint |
 | `webhookApiKey` | `string` | API key for auth |
 | `webhookHeaders` | `Record<string, string>` | Custom headers |
+| `onSendMessage` | `(msg, meta) => string \| object \| Promise` | **New in 1.11.0.** Client-side responder that replaces the webhook POST (fake/mock provider or custom AI). |
 | `onResponse` | `(msg, data) => void` | Response callback |
 | `onError` | `(err, friendly) => void` | Error callback |
 | `formatRequest` | `(text, meta) => any` | Custom request format |
@@ -817,6 +821,51 @@ const { count, size, sizeFormatted } = await getCacheStats();
   enableSTT={true}
   enableAttachments={true}
 />
+```
+
+### No backend — fake / mock provider (`onSendMessage`, new in 1.11.0)
+
+`onSendMessage` replaces the webhook POST. Return a string, or an object
+`{ message | content | text, attachments?, action? }`. No `webhookUrl` needed —
+great for demos, tests, or wiring a custom AI client (OpenAI/Anthropic/your own).
+
+```jsx
+// Same canned reply for every message (a "fake provider"):
+<AvatarChatbot
+  avatarUrl="/avatars/assistant.ania"
+  assistantName="Ania"
+  onSendMessage={() => 'Olá! Esta é uma resposta de teste. 🤖'}
+/>
+
+// Or call your own AI and return the text:
+<AvatarChatbot
+  avatarUrl="/avatars/assistant.ania"
+  onSendMessage={async (message) => {
+    const reply = await myAiClient.ask(message);
+    return reply; // shown as the assistant bubble
+  }}
+/>
+```
+
+### Start from a template (`CHATBOT_TEMPLATES`, new in 1.11.0)
+
+Ready-made personas you can spread onto the widget (or load into
+`<AvatarConfigurator defaultValue={...}>`). Each has `{ id, name, emoji,
+description, config, sampleReply? }` — `config` is a partial prop map, and
+`sampleReply` is an optional canned answer for the `onSendMessage` fake provider.
+
+```jsx
+import { AvatarChatbot, CHATBOT_TEMPLATES, CHATBOT_TEMPLATE_BY_ID } from 'ania-avatar-react';
+
+const support = CHATBOT_TEMPLATE_BY_ID['support'];
+
+<AvatarChatbot
+  avatarUrl="/avatars/assistant.ania"
+  {...support.config}
+  onSendMessage={() => support.sampleReply}  // try it with no backend
+/>
+
+// Built-in ids: greeter · support · sales · faq · playful · ai-assistant
 ```
 
 ### n8n with Authentication
