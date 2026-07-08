@@ -37,6 +37,12 @@ export const AniaAvatar = forwardRef(({
   autoCalculateSpeed = true,
   startMinimized = false,
   preserveQuality = true,
+  /**
+   * How the avatar bitmap fits the stage when maximized: 'contain' (default,
+   * whole avatar visible, letterboxed), 'cover' (fills the box, edges cropped),
+   * or 'fill' (stretched). Minimized always uses 'cover' (round badge).
+   */
+  fit = 'contain',
   /** Força o avatar sempre acima de todos os outros elementos (default: true) */
   alwaysOnTop = true,
   /**
@@ -453,20 +459,37 @@ export const AniaAvatar = forwardRef(({
         let canvasWidth = width;
         let canvasHeight = height;
 
-        if (preserveQuality && avatarData.video) {
+        // Size the drawing buffer to the FRAMES' native aspect ratio. The player
+        // bundle draws each frame stretched to the buffer
+        // (drawImage(frame, 0, 0, canvas.width, canvas.height)); if the buffer
+        // keeps the square width/height props while the frames are portrait, a
+        // tall avatar gets squashed/cut and the element-level object-fit can't
+        // recover it (a square buffer has nothing to letterbox). Prefer the
+        // authored video.width/height; otherwise DECODE the first frame up front
+        // (awaited — not the old async onload that raced playerRef and squashed
+        // the first frames) so the buffer matches the avatar before it draws.
+        if (avatarData.video) {
           if (avatarData.video.width && avatarData.video.height) {
             canvasWidth = avatarData.video.width;
             canvasHeight = avatarData.video.height;
           } else if (avatarData.video.frames && avatarData.video.frames.length > 0) {
-            const img = new Image();
-            img.src = `data:image/webp;base64,${avatarData.video.frames[0]}`;
-            img.onload = () => {
-              if (playerRef.current && playerRef.current.canvas) {
-                playerRef.current.canvas.width = img.width;
-                playerRef.current.canvas.height = img.height;
-              }
-            };
+            const dims = await new Promise((resolve) => {
+              const img = new Image();
+              img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+              img.onerror = () => resolve(null);
+              img.src = `data:image/webp;base64,${avatarData.video.frames[0]}`;
+            });
+            if (dims && dims.w > 0 && dims.h > 0) {
+              canvasWidth = dims.w;
+              canvasHeight = dims.h;
+            }
           }
+        }
+
+        // Container went away while we were decoding — bail cleanly.
+        if (!containerRef.current) {
+          isLoadingRef.current = false;
+          return;
         }
 
         if (!containerRef.current) {
@@ -492,7 +515,7 @@ export const AniaAvatar = forwardRef(({
         player.canvas.style.left = '0';
         player.canvas.style.width = '100%';
         player.canvas.style.height = '100%';
-        player.canvas.style.objectFit = isMinimized ? 'cover' : 'contain';
+        player.canvas.style.objectFit = isMinimized ? 'cover' : fit;
         player.canvas.style.display = 'block';
 
         const animationConfig = {
@@ -732,21 +755,25 @@ export const AniaAvatar = forwardRef(({
       s.setProperty('transform', 'translate(-50%, -50%)', 'important');
       s.setProperty('width', displayW + 'px', 'important');
       s.setProperty('height', displayH + 'px', 'important');
+      s.setProperty('object-fit', 'cover', 'important');
       s.setProperty('display', 'block', 'important');
       s.removeProperty('margin');
     } else {
-      // Maximizado: preenche o container
+      // Maximizado: preenche o container. Re-assert object-fit here too — the
+      // player bundle rewrites the canvas style on its draw loop, and without
+      // this a portrait avatar could lose 'contain' and get cropped.
       s.setProperty('position', 'absolute', 'important');
       s.setProperty('top', '0', 'important');
       s.setProperty('left', '0', 'important');
       s.setProperty('width', '100%', 'important');
       s.setProperty('height', '100%', 'important');
+      s.setProperty('object-fit', fit, 'important');
       s.setProperty('display', 'block', 'important');
       s.removeProperty('transform');
       s.removeProperty('margin');
     }
     enforcingRef.current = false;
-  }, [isMinimized, width, height]);
+  }, [isMinimized, width, height, fit]);
 
   useEffect(() => {
     enforceCanvasStyles();

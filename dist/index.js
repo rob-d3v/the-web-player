@@ -12349,6 +12349,12 @@ const AniaAvatar = forwardRef(({
   autoCalculateSpeed = true,
   startMinimized = false,
   preserveQuality = true,
+  /**
+   * How the avatar bitmap fits the stage when maximized: 'contain' (default,
+   * whole avatar visible, letterboxed), 'cover' (fills the box, edges cropped),
+   * or 'fill' (stretched). Minimized always uses 'cover' (round badge).
+   */
+  fit = "contain",
   /** Força o avatar sempre acima de todos os outros elementos (default: true) */
   alwaysOnTop = true,
   /**
@@ -12699,20 +12705,26 @@ const AniaAvatar = forwardRef(({
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
         let canvasWidth = width;
         let canvasHeight = height;
-        if (preserveQuality && avatarData.video) {
+        if (avatarData.video) {
           if (avatarData.video.width && avatarData.video.height) {
             canvasWidth = avatarData.video.width;
             canvasHeight = avatarData.video.height;
           } else if (avatarData.video.frames && avatarData.video.frames.length > 0) {
-            const img = new Image();
-            img.src = `data:image/webp;base64,${avatarData.video.frames[0]}`;
-            img.onload = () => {
-              if (playerRef.current && playerRef.current.canvas) {
-                playerRef.current.canvas.width = img.width;
-                playerRef.current.canvas.height = img.height;
-              }
-            };
+            const dims = await new Promise((resolve) => {
+              const img = new Image();
+              img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+              img.onerror = () => resolve(null);
+              img.src = `data:image/webp;base64,${avatarData.video.frames[0]}`;
+            });
+            if (dims && dims.w > 0 && dims.h > 0) {
+              canvasWidth = dims.w;
+              canvasHeight = dims.h;
+            }
           }
+        }
+        if (!containerRef.current) {
+          isLoadingRef.current = false;
+          return;
         }
         if (!containerRef.current) {
           console.error("[AniaAvatar] containerRef became null after fetch!");
@@ -12736,7 +12748,7 @@ const AniaAvatar = forwardRef(({
         player.canvas.style.left = "0";
         player.canvas.style.width = "100%";
         player.canvas.style.height = "100%";
-        player.canvas.style.objectFit = isMinimized ? "cover" : "contain";
+        player.canvas.style.objectFit = isMinimized ? "cover" : fit;
         player.canvas.style.display = "block";
         const animationConfig = {
           ...avatarData.animation,
@@ -12921,6 +12933,7 @@ const AniaAvatar = forwardRef(({
       s.setProperty("transform", "translate(-50%, -50%)", "important");
       s.setProperty("width", displayW + "px", "important");
       s.setProperty("height", displayH + "px", "important");
+      s.setProperty("object-fit", "cover", "important");
       s.setProperty("display", "block", "important");
       s.removeProperty("margin");
     } else {
@@ -12929,12 +12942,13 @@ const AniaAvatar = forwardRef(({
       s.setProperty("left", "0", "important");
       s.setProperty("width", "100%", "important");
       s.setProperty("height", "100%", "important");
+      s.setProperty("object-fit", fit, "important");
       s.setProperty("display", "block", "important");
       s.removeProperty("transform");
       s.removeProperty("margin");
     }
     enforcingRef.current = false;
-  }, [isMinimized, width, height]);
+  }, [isMinimized, width, height, fit]);
   useEffect(() => {
     enforceCanvasStyles();
   }, [isMinimized, width, height, preserveQuality, isMobile, mobileMinimizedSize, isLoaded, enforceCanvasStyles]);

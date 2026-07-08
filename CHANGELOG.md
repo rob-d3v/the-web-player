@@ -2,6 +2,28 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.11.1]
+
+### Fixed — portrait avatars no longer get squashed / cut off
+Avatars whose `.ania` didn't carry `video.width`/`video.height` (older exports)
+rendered into a square drawing buffer sized from the `width`/`height` props. The
+player bundle draws each frame stretched to the buffer, so a tall avatar was
+squashed into the square and clipped — and the element-level `object-fit` could
+not recover it because the buffer itself had the wrong aspect ratio.
+
+- **The drawing buffer is now sized to the frames' native aspect ratio.** When
+  `video.width`/`video.height` are missing, the first frame is decoded up front
+  (awaited) to read its real dimensions before the player is created — replacing
+  the old async `onload` that raced `playerRef` and squashed the first frames.
+- **`object-fit` is re-asserted on every style pass** (`enforceCanvasStyles`), so
+  the player's draw loop can't drop `contain` and crop a portrait avatar.
+
+### Added — `fit` prop
+`fit?: 'contain' | 'cover' | 'fill'` (default `'contain'`) controls how the
+maximized avatar fills its stage: `contain` shows the whole avatar letterboxed,
+`cover` fills and crops the edges, `fill` stretches. Minimized still uses
+`cover`. Applies live.
+
 ## [1.11.0]
 
 ### Fixed — `idleSpeed` / `talkSpeed` props are now respected and apply live

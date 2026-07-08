@@ -63,6 +63,11 @@ export interface AniaAvatarProps {
   autoCalculateSpeed?: boolean;
   startMinimized?: boolean;
   preserveQuality?: boolean;
+  /**
+   * How the avatar fits the stage when maximized. 'contain' (default) shows the
+   * whole avatar letterboxed; 'cover' fills and crops the edges; 'fill'
+   * stretches. Minimized always uses 'cover'. */
+  fit?: 'contain' | 'cover' | 'fill';
   alwaysOnTop?: boolean;
   /** Render embedded in the parent flow (relative, no body portal) instead of the fixed floating widget. */
   inline?: boolean;
