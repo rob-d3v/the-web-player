@@ -28,6 +28,12 @@ export const useChatbot = ({
   webhookUrl,
   webhookApiKey = null,
   webhookHeaders = {},
+  // Client-side responder override. When set, replaces the webhook POST: called
+  // with (message, metadata), returns the reply as a string OR an object
+  // { message|content|text, attachments?, action? }. Enables a fake/mock
+  // provider or a custom AI client with no webhookUrl. A throw is surfaced as
+  // the same friendly error the webhook path uses.
+  onSendMessage,
   onResponse,
   onError,
   formatRequest,
@@ -58,6 +64,55 @@ export const useChatbot = ({
       ...restMetadata
     };
     setMessages((prev) => [...prev, userMessage]);
+
+    // Client-side responder path — bypasses the webhook entirely. Whatever the
+    // handler resolves to becomes the assistant bubble; a throw falls through to
+    // the shared friendly-error handling below.
+    if (typeof onSendMessage === 'function') {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const reply = await onSendMessage(message, metadata);
+        let responseText = '';
+        let responseAttachments = [];
+        let responseAction = null;
+        if (typeof reply === 'string') {
+          responseText = reply;
+        } else if (reply && typeof reply === 'object') {
+          responseText = reply.message || reply.content || reply.text || '';
+          responseAttachments = reply.attachments || [];
+          responseAction = reply.action || null;
+        }
+        if (responseAction && onActionTriggered) onActionTriggered(responseAction);
+        const botMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: responseText,
+          timestamp: (new Date()).toISOString(),
+          attachments: responseAttachments.length > 0 ? responseAttachments : undefined,
+          raw: reply
+        };
+        setMessages((prev) => [...prev, botMessage]);
+        if (onResponse) onResponse(botMessage, reply);
+        setIsLoading(false);
+        return botMessage;
+      } catch (err) {
+        console.error('[useChatbot] onSendMessage responder failed:', err);
+        const friendlyMessage = resolveGenericError(translate);
+        const errorMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: friendlyMessage,
+          timestamp: (new Date()).toISOString(),
+          isError: true
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        setError(friendlyMessage);
+        if (onError) onError(err, friendlyMessage);
+        setIsLoading(false);
+        return errorMessage;
+      }
+    }
 
     if (!webhookUrl) {
       setError("Chat não configurado (webhookUrl ausente).");
@@ -190,7 +245,7 @@ export const useChatbot = ({
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered, translate]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered, translate]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);

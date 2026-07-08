@@ -12342,8 +12342,10 @@ const AniaAvatar = forwardRef(({
   minimizable = true,
   closable = true,
   detectAudio = false,
-  idleSpeed = 1,
-  talkSpeed = 1,
+  // undefined = host did not set it → the file's authored speed (or the fps
+  // heuristic) wins. A number = explicit host override that beats both.
+  idleSpeed = void 0,
+  talkSpeed = void 0,
   autoCalculateSpeed = true,
   startMinimized = false,
   preserveQuality = true,
@@ -12678,8 +12680,8 @@ const AniaAvatar = forwardRef(({
           throw new Error(tr2.t("avatar.error.noSource"));
         }
         const detectedFps = (_c = avatarData.video) == null ? void 0 : _c.fps;
-        let finalIdleSpeed = idleSpeed;
-        let finalTalkSpeed = talkSpeed;
+        let finalIdleSpeed = 1;
+        let finalTalkSpeed = 1;
         if (autoCalculateSpeed && detectedFps) {
           const optimalSpeeds = calculateOptimalSpeeds(detectedFps);
           finalIdleSpeed = optimalSpeeds.idle;
@@ -12692,6 +12694,8 @@ const AniaAvatar = forwardRef(({
         if (typeof fileAnim.talkSpeedSliderValue === "number" && fileAnim.talkSpeedSliderValue > 0) {
           finalTalkSpeed = fileAnim.talkSpeedSliderValue;
         }
+        if (typeof idleSpeed === "number" && idleSpeed > 0) finalIdleSpeed = idleSpeed;
+        if (typeof talkSpeed === "number" && talkSpeed > 0) finalTalkSpeed = talkSpeed;
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
         let canvasWidth = width;
         let canvasHeight = height;
@@ -12880,6 +12884,17 @@ const AniaAvatar = forwardRef(({
       isLoadingRef.current = false;
     };
   }, [avatarUrl, avatarPassword, externalAvatarData, authToken, preserveQuality]);
+  useEffect(() => {
+    if (!isLoaded) return;
+    const ctrl = playerRef.current && playerRef.current.animationController;
+    if (!ctrl) return;
+    if (typeof idleSpeed === "number" && idleSpeed > 0 && ctrl.setIdleSpeed) {
+      ctrl.setIdleSpeed(idleSpeed);
+    }
+    if (typeof talkSpeed === "number" && talkSpeed > 0 && ctrl.setTalkSpeed) {
+      ctrl.setTalkSpeed(talkSpeed);
+    }
+  }, [idleSpeed, talkSpeed, isLoaded]);
   const getMobileSize = () => {
     if (isMobile && isMinimized) {
       return { width: mobileMinimizedSize, height: mobileMinimizedSize };
@@ -14170,6 +14185,12 @@ const useChatbot = ({
   webhookUrl,
   webhookApiKey = null,
   webhookHeaders = {},
+  // Client-side responder override. When set, replaces the webhook POST: called
+  // with (message, metadata), returns the reply as a string OR an object
+  // { message|content|text, attachments?, action? }. Enables a fake/mock
+  // provider or a custom AI client with no webhookUrl. A throw is surfaced as
+  // the same friendly error the webhook path uses.
+  onSendMessage,
   onResponse,
   onError,
   formatRequest,
@@ -14194,6 +14215,51 @@ const useChatbot = ({
       ...restMetadata
     };
     setMessages((prev) => [...prev, userMessage]);
+    if (typeof onSendMessage === "function") {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const reply = await onSendMessage(message, metadata);
+        let responseText = "";
+        let responseAttachments = [];
+        let responseAction = null;
+        if (typeof reply === "string") {
+          responseText = reply;
+        } else if (reply && typeof reply === "object") {
+          responseText = reply.message || reply.content || reply.text || "";
+          responseAttachments = reply.attachments || [];
+          responseAction = reply.action || null;
+        }
+        if (responseAction && onActionTriggered) onActionTriggered(responseAction);
+        const botMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: responseText,
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+          attachments: responseAttachments.length > 0 ? responseAttachments : void 0,
+          raw: reply
+        };
+        setMessages((prev) => [...prev, botMessage]);
+        if (onResponse) onResponse(botMessage, reply);
+        setIsLoading(false);
+        return botMessage;
+      } catch (err) {
+        console.error("[useChatbot] onSendMessage responder failed:", err);
+        const friendlyMessage = resolveGenericError(translate);
+        const errorMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: friendlyMessage,
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+          isError: true
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        setError(friendlyMessage);
+        if (onError) onError(err, friendlyMessage);
+        setIsLoading(false);
+        return errorMessage;
+      }
+    }
     if (!webhookUrl) {
       setError("Chat não configurado (webhookUrl ausente).");
       return;
@@ -14296,7 +14362,7 @@ const useChatbot = ({
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered, translate]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered, translate]);
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
@@ -16556,8 +16622,10 @@ const AvatarChatbot = ({
   theme = "dark",
   enableTTS = true,
   autoGreeting = true,
-  idleSpeed = 1,
-  talkSpeed = 1,
+  // undefined = inherit the file's authored speed (creator intent); a number is
+  // an explicit override. See AniaAvatar's speed-precedence note.
+  idleSpeed = void 0,
+  talkSpeed = void 0,
   autoCalculateSpeed = true,
   showSpeedControls = false,
   startMinimized = false,
@@ -16618,6 +16686,12 @@ const AvatarChatbot = ({
   // n8n authentication
   webhookApiKey = null,
   webhookHeaders = {},
+  // Client-side responder override. When provided, the chat calls this instead
+  // of POSTing to webhookUrl — receives (message, metadata), returns the reply
+  // (a string, or an object with { message, attachments?, action? }). Use it for
+  // a fake/mock provider, local testing, or a custom AI client. No webhookUrl
+  // required. See useChatbot.
+  onSendMessage,
   // Lip sync props
   lipSyncEnabled = false,
   lipSyncServerUrl = null,
@@ -16972,6 +17046,7 @@ const AvatarChatbot = ({
     webhookUrl,
     webhookApiKey,
     webhookHeaders,
+    onSendMessage,
     availableActions,
     // Localize the friendly fallback copy (chat.error.generic) shown on failure.
     translate: tr2.t,
@@ -17909,13 +17984,13 @@ const AvatarChatbot = ({
               children: [
                 jsxs("div", { style: { display: "flex", alignItems: "center", gap: "10px" }, children: [
                   jsx("span", { style: { fontSize: "12px", color: "#6b7280", width: "40px" }, children: tr2.t("chat.speed.idle") }),
-                  jsx("input", { type: "range", min: "0.25", max: "10", step: "0.25", value: currentIdleSpeed, onChange: (e) => handleIdleSpeedChange(parseFloat(e.target.value)), style: { flex: 1 } }),
-                  jsx("span", { style: { fontSize: "12px", fontWeight: "600", color: "#374151", width: "45px", textAlign: "right" }, children: currentIdleSpeed.toFixed(2) + "x" })
+                  jsx("input", { type: "range", min: "0.25", max: "10", step: "0.25", value: currentIdleSpeed ?? 1, onChange: (e) => handleIdleSpeedChange(parseFloat(e.target.value)), style: { flex: 1 } }),
+                  jsx("span", { style: { fontSize: "12px", fontWeight: "600", color: "#374151", width: "45px", textAlign: "right" }, children: (currentIdleSpeed ?? 1).toFixed(2) + "x" })
                 ] }),
                 jsxs("div", { style: { display: "flex", alignItems: "center", gap: "10px" }, children: [
                   jsx("span", { style: { fontSize: "12px", color: "#6b7280", width: "40px" }, children: tr2.t("chat.speed.talk") }),
-                  jsx("input", { type: "range", min: "0.25", max: "10", step: "0.25", value: currentTalkSpeed, onChange: (e) => handleTalkSpeedChange(parseFloat(e.target.value)), style: { flex: 1 } }),
-                  jsx("span", { style: { fontSize: "12px", fontWeight: "600", color: "#374151", width: "45px", textAlign: "right" }, children: currentTalkSpeed.toFixed(2) + "x" })
+                  jsx("input", { type: "range", min: "0.25", max: "10", step: "0.25", value: currentTalkSpeed ?? 1, onChange: (e) => handleTalkSpeedChange(parseFloat(e.target.value)), style: { flex: 1 } }),
+                  jsx("span", { style: { fontSize: "12px", fontWeight: "600", color: "#374151", width: "45px", textAlign: "right" }, children: (currentTalkSpeed ?? 1).toFixed(2) + "x" })
                 ] })
               ]
             })

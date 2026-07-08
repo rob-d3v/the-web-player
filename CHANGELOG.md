@@ -2,6 +2,28 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.11.0]
+
+### Fixed — `idleSpeed` / `talkSpeed` props are now respected and apply live
+Changing `idleSpeed`/`talkSpeed` (e.g. via `<AvatarConfigurator>`) previously did
+nothing: the `.ania`'s authored speed and the fps auto-heuristic both clobbered
+the host value, and the speed was only read once at avatar-creation so runtime
+changes never reached the animation.
+
+- **Explicit host props now win** over the file's authored speed and the fps
+  heuristic. Precedence (low → high): `1` < fps heuristic < `.ania` speed <
+  explicit prop. Hosts that leave the props unset keep the file/heuristic speed
+  (creator intent preserved) — the defaults changed from `1` to `undefined` to
+  distinguish "unset" from "set to 1".
+- **Speed changes apply live** without a remount, via the animation controller's
+  `setIdleSpeed`/`setTalkSpeed` (the same path the in-widget speed controls use).
+
+### Added — `onSendMessage` client-side responder (fake/mock provider, custom AI)
+`<AvatarChatbot>` and `useChatbot` accept `onSendMessage(message, metadata)`.
+When provided it replaces the webhook POST — return a string or
+`{ message|content|text, attachments?, action? }`. No `webhookUrl` needed. Powers
+the site playground's "fake provider" test and any custom in-app AI client.
+
 ## [1.10.1]
 
 ### Fixed — `<AniaAvatar>` no longer demands a password for MARKET .ania files

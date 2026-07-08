@@ -151,6 +151,13 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   // n8n/webhook authentication
   webhookApiKey?: string;
   webhookHeaders?: Record<string, string>;
+  /**
+   * Client-side responder override. When set, the chat calls this instead of
+   * POSTing to `webhookUrl` — receives (message, metadata) and returns the reply
+   * (a string, or `{ message|content|text, attachments?, action? }`). Enables a
+   * fake/mock provider or a custom AI client; no `webhookUrl` needed.
+   */
+  onSendMessage?: (message: string, metadata: any) => string | ChatResponsePayload | Promise<string | ChatResponsePayload>;
   // ===== Plugin architecture =====
   /** Custom plugins registered on top of the built-ins (can override by id). */
   plugins?: Plugin[];
@@ -256,10 +263,23 @@ export interface SpeakOptions {
   splitOnSemicolon?: boolean;
 }
 
+export interface ChatResponsePayload {
+  message?: string;
+  content?: string;
+  text?: string;
+  attachments?: any[];
+  action?: string;
+}
+
 export interface UseChatbotOptions {
   webhookUrl?: string;
   webhookApiKey?: string;
   webhookHeaders?: Record<string, string>;
+  /**
+   * Client-side responder override — replaces the webhook POST. Returns the
+   * reply as a string or `{ message|content|text, attachments?, action? }`.
+   */
+  onSendMessage?: (message: string, metadata: any) => string | ChatResponsePayload | Promise<string | ChatResponsePayload>;
   onResponse?: (message: ChatMessage, data: any) => void;
   onError?: (error: Error, friendlyMessage: string) => void;
   formatRequest?: (message: string, metadata: any) => any;

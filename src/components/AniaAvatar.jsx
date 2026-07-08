@@ -30,8 +30,10 @@ export const AniaAvatar = forwardRef(({
   minimizable = true,
   closable = true,
   detectAudio = false,
-  idleSpeed = 1,
-  talkSpeed = 1,
+  // undefined = host did not set it → the file's authored speed (or the fps
+  // heuristic) wins. A number = explicit host override that beats both.
+  idleSpeed = undefined,
+  talkSpeed = undefined,
   autoCalculateSpeed = true,
   startMinimized = false,
   preserveQuality = true,
@@ -422,17 +424,20 @@ export const AniaAvatar = forwardRef(({
         }
         const detectedFps = (_c = avatarData.video) == null ? void 0 : _c.fps;
 
-        let finalIdleSpeed = idleSpeed;
-        let finalTalkSpeed = talkSpeed;
+        // Speed precedence (lowest → highest):
+        //   1 (baseline) < fps heuristic < .ania authored speed < explicit host prop.
+        // The fps heuristic and the file's authored speeds carry the creator's
+        // intent for hosts that DON'T set a speed. But an explicit host prop
+        // (e.g. the AvatarConfigurator's Idle/Talk speed sliders) is a
+        // deliberate override and must win — previously the file clobbered it,
+        // so changing idleSpeed/talkSpeed in the configurator did nothing.
+        let finalIdleSpeed = 1;
+        let finalTalkSpeed = 1;
         if (autoCalculateSpeed && detectedFps) {
           const optimalSpeeds = calculateOptimalSpeeds(detectedFps);
           finalIdleSpeed = optimalSpeeds.idle;
           finalTalkSpeed = optimalSpeeds.talk;
         }
-        // Speeds authored into the .ania (web studio / desktop) carry the
-        // creator's intent and take precedence over host props and the fps
-        // heuristic — desktop-player parity. Files without the fields (all
-        // pre-studio avatars) keep the host-prop behavior above.
         const fileAnim = avatarData.animation || {};
         if (typeof fileAnim.idleSpeedSliderValue === 'number' && fileAnim.idleSpeedSliderValue > 0) {
           finalIdleSpeed = fileAnim.idleSpeedSliderValue;
@@ -440,6 +445,8 @@ export const AniaAvatar = forwardRef(({
         if (typeof fileAnim.talkSpeedSliderValue === 'number' && fileAnim.talkSpeedSliderValue > 0) {
           finalTalkSpeed = fileAnim.talkSpeedSliderValue;
         }
+        if (typeof idleSpeed === 'number' && idleSpeed > 0) finalIdleSpeed = idleSpeed;
+        if (typeof talkSpeed === 'number' && talkSpeed > 0) finalTalkSpeed = talkSpeed;
 
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
 
@@ -674,6 +681,24 @@ export const AniaAvatar = forwardRef(({
       isLoadingRef.current = false;
     };
   }, [avatarUrl, avatarPassword, externalAvatarData, authToken, preserveQuality]);
+
+  // Live-apply idle/talk speed when the host changes the props AFTER load — the
+  // load effect above resolves speed only once at creation, so without this a
+  // configurator slider (or any runtime prop change) never reached the running
+  // animation. The browser controller exposes setIdleSpeed/setTalkSpeed — the
+  // same path the in-widget speed controls use. Only fires for explicit numeric
+  // props, so a host that leaves them unset keeps the file/heuristic speed.
+  useEffect(() => {
+    if (!isLoaded) return;
+    const ctrl = playerRef.current && playerRef.current.animationController;
+    if (!ctrl) return;
+    if (typeof idleSpeed === 'number' && idleSpeed > 0 && ctrl.setIdleSpeed) {
+      ctrl.setIdleSpeed(idleSpeed);
+    }
+    if (typeof talkSpeed === 'number' && talkSpeed > 0 && ctrl.setTalkSpeed) {
+      ctrl.setTalkSpeed(talkSpeed);
+    }
+  }, [idleSpeed, talkSpeed, isLoaded]);
 
   const getMobileSize = () => {
     if (isMobile && isMinimized) {

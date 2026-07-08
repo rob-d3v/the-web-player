@@ -72,8 +72,10 @@ export const AvatarChatbot = ({
   theme = "dark",
   enableTTS = true,
   autoGreeting = true,
-  idleSpeed = 1,
-  talkSpeed = 1,
+  // undefined = inherit the file's authored speed (creator intent); a number is
+  // an explicit override. See AniaAvatar's speed-precedence note.
+  idleSpeed = undefined,
+  talkSpeed = undefined,
   autoCalculateSpeed = true,
   showSpeedControls = false,
   startMinimized = false,
@@ -134,6 +136,12 @@ export const AvatarChatbot = ({
   // n8n authentication
   webhookApiKey = null,
   webhookHeaders = {},
+  // Client-side responder override. When provided, the chat calls this instead
+  // of POSTing to webhookUrl — receives (message, metadata), returns the reply
+  // (a string, or an object with { message, attachments?, action? }). Use it for
+  // a fake/mock provider, local testing, or a custom AI client. No webhookUrl
+  // required. See useChatbot.
+  onSendMessage,
   // Lip sync props
   lipSyncEnabled = false,
   lipSyncServerUrl = null,
@@ -582,6 +590,7 @@ export const AvatarChatbot = ({
     webhookUrl,
     webhookApiKey,
     webhookHeaders,
+    onSendMessage,
     availableActions,
     // Localize the friendly fallback copy (chat.error.generic) shown on failure.
     translate: tr.t,
@@ -1630,13 +1639,13 @@ export const AvatarChatbot = ({
               children: [
                 jsxs("div", { style: { display: "flex", alignItems: "center", gap: "10px" }, children: [
                   jsx("span", { style: { fontSize: "12px", color: "#6b7280", width: "40px" }, children: tr.t("chat.speed.idle") }),
-                  jsx("input", { type: "range", min: "0.25", max: "10", step: "0.25", value: currentIdleSpeed, onChange: (e) => handleIdleSpeedChange(parseFloat(e.target.value)), style: { flex: 1 } }),
-                  jsx("span", { style: { fontSize: "12px", fontWeight: "600", color: "#374151", width: "45px", textAlign: "right" }, children: currentIdleSpeed.toFixed(2) + "x" })
+                  jsx("input", { type: "range", min: "0.25", max: "10", step: "0.25", value: currentIdleSpeed ?? 1, onChange: (e) => handleIdleSpeedChange(parseFloat(e.target.value)), style: { flex: 1 } }),
+                  jsx("span", { style: { fontSize: "12px", fontWeight: "600", color: "#374151", width: "45px", textAlign: "right" }, children: (currentIdleSpeed ?? 1).toFixed(2) + "x" })
                 ]}),
                 jsxs("div", { style: { display: "flex", alignItems: "center", gap: "10px" }, children: [
                   jsx("span", { style: { fontSize: "12px", color: "#6b7280", width: "40px" }, children: tr.t("chat.speed.talk") }),
-                  jsx("input", { type: "range", min: "0.25", max: "10", step: "0.25", value: currentTalkSpeed, onChange: (e) => handleTalkSpeedChange(parseFloat(e.target.value)), style: { flex: 1 } }),
-                  jsx("span", { style: { fontSize: "12px", fontWeight: "600", color: "#374151", width: "45px", textAlign: "right" }, children: currentTalkSpeed.toFixed(2) + "x" })
+                  jsx("input", { type: "range", min: "0.25", max: "10", step: "0.25", value: currentTalkSpeed ?? 1, onChange: (e) => handleTalkSpeedChange(parseFloat(e.target.value)), style: { flex: 1 } }),
+                  jsx("span", { style: { fontSize: "12px", fontWeight: "600", color: "#374151", width: "45px", textAlign: "right" }, children: (currentTalkSpeed ?? 1).toFixed(2) + "x" })
                 ]})
               ]
             })
