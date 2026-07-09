@@ -74,6 +74,9 @@ export const AvatarChatbot = ({
   // inner AniaAvatar so a host (e.g. the site avatar tuned on /test-avatar) can
   // pin the framing it chose.
   fit = 'contain',
+  // Minimized framing: false (default) = whole avatar, smaller (no crop);
+  // true = classic cropped badge. Forwarded to the inner AniaAvatar.
+  cropMinimized = false,
   enableTTS = true,
   autoGreeting = true,
   // undefined = inherit the file's authored speed (creator intent); a number is
@@ -1402,6 +1405,7 @@ export const AvatarChatbot = ({
       transparent,
       theme,
       fit,
+      cropMinimized,
       locale,
       messagesOverride,
       minimizable: true,

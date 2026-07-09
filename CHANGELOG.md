@@ -2,6 +2,21 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.11.3]
+
+### Added — `cropMinimized` prop (no-crop minimized avatar)
+The minimized avatar badge used to always crop the edges (a zoomed center via
+`object-fit: cover`). New `cropMinimized` prop controls this:
+
+- **`false` (default)** — shows the **whole avatar, just smaller**
+  (`object-fit: contain`, no crop). The canvas now fills the small badge box so
+  the container's `overflow` can't clip it — this matters for the tiny 60px
+  mobile badge, whose box is far smaller than the old oversized canvas.
+- **`true`** — restores the classic cropped badge (`object-fit: cover`).
+
+Forwarded through `AvatarChatbot`. `fit` continues to govern the maximized
+framing.
+
 ## [1.11.2]
 
 ### Fixed — `AvatarChatbot` now forwards the `fit` prop

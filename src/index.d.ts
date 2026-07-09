@@ -66,8 +66,13 @@ export interface AniaAvatarProps {
   /**
    * How the avatar fits the stage when maximized. 'contain' (default) shows the
    * whole avatar letterboxed; 'cover' fills and crops the edges; 'fill'
-   * stretches. Minimized always uses 'cover'. */
+   * stretches. Minimized framing is governed by `cropMinimized`. */
   fit?: 'contain' | 'cover' | 'fill';
+  /**
+   * Minimized framing. `false` (default) shows the whole avatar, just smaller
+   * (object-fit: contain, no crop). `true` restores the classic badge that
+   * fills the round area and crops the edges (object-fit: cover). */
+  cropMinimized?: boolean;
   alwaysOnTop?: boolean;
   /** Render embedded in the parent flow (relative, no body portal) instead of the fixed floating widget. */
   inline?: boolean;

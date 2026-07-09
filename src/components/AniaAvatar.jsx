@@ -43,6 +43,14 @@ export const AniaAvatar = forwardRef(({
    * or 'fill' (stretched). Minimized always uses 'cover' (round badge).
    */
   fit = 'contain',
+  /**
+   * How the avatar fits its box when MINIMIZED. `false` (default) = show the
+   * whole avatar, just smaller (object-fit: contain — no crop). `true` = the
+   * classic minimized badge that fills the round area and crops the edges
+   * (object-fit: cover). Only affects the minimized state; `fit` governs
+   * maximized.
+   */
+  cropMinimized = false,
   /** Força o avatar sempre acima de todos os outros elementos (default: true) */
   alwaysOnTop = true,
   /**
@@ -515,7 +523,7 @@ export const AniaAvatar = forwardRef(({
         player.canvas.style.left = '0';
         player.canvas.style.width = '100%';
         player.canvas.style.height = '100%';
-        player.canvas.style.objectFit = isMinimized ? 'cover' : fit;
+        player.canvas.style.objectFit = isMinimized ? (cropMinimized ? 'cover' : 'contain') : fit;
         player.canvas.style.display = 'block';
 
         const animationConfig = {
@@ -744,9 +752,9 @@ export const AniaAvatar = forwardRef(({
     if (!canvas) return;
     enforcingRef.current = true;
     const s = canvas.style;
-    if (isMinimized) {
-      // Tamanho explícito em px = 50% do tamanho original para manter qualidade
-      // Centralizado com transform para mostrar o centro (rosto/corpo) do avatar
+    if (isMinimized && cropMinimized) {
+      // Classic cropped badge: canvas larger than the box, centered, and cropped
+      // by the container's overflow — shows a zoomed center (rosto/corpo).
       const displayW = Math.floor(width / 2);
       const displayH = Math.floor(height / 2);
       s.setProperty('position', 'absolute', 'important');
@@ -757,6 +765,21 @@ export const AniaAvatar = forwardRef(({
       s.setProperty('height', displayH + 'px', 'important');
       s.setProperty('object-fit', 'cover', 'important');
       s.setProperty('display', 'block', 'important');
+      s.removeProperty('margin');
+    } else if (isMinimized) {
+      // No-crop minimized (default): the canvas FILLS the small box and the whole
+      // avatar is letterboxed inside it (object-fit: contain). Filling the box —
+      // instead of the oversized-canvas trick above — is what stops the
+      // container's overflow from cropping a small badge (e.g. the 60px mobile
+      // badge, whose box is far smaller than width/2).
+      s.setProperty('position', 'absolute', 'important');
+      s.setProperty('top', '0', 'important');
+      s.setProperty('left', '0', 'important');
+      s.setProperty('width', '100%', 'important');
+      s.setProperty('height', '100%', 'important');
+      s.setProperty('object-fit', 'contain', 'important');
+      s.setProperty('display', 'block', 'important');
+      s.removeProperty('transform');
       s.removeProperty('margin');
     } else {
       // Maximizado: preenche o container. Re-assert object-fit here too — the
@@ -773,7 +796,7 @@ export const AniaAvatar = forwardRef(({
       s.removeProperty('margin');
     }
     enforcingRef.current = false;
-  }, [isMinimized, width, height, fit]);
+  }, [isMinimized, width, height, fit, cropMinimized]);
 
   useEffect(() => {
     enforceCanvasStyles();

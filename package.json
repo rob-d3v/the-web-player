@@ -1,6 +1,6 @@
 {
   "name": "ania-avatar-react",
-  "version": "1.11.2",
+  "version": "1.11.3",
   "description": "React component library for ANIA Avatar with TTS, STT, and chatbot integration",
   "type": "module",
   "main": "./dist/index.cjs",
