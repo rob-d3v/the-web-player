@@ -2,6 +2,15 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.11.2]
+
+### Fixed — `AvatarChatbot` now forwards the `fit` prop
+`AniaAvatarProps.fit` (`contain`/`cover`/`fill`) was honoured by the bare
+`AniaAvatar` player but silently dropped by `AvatarChatbot`, which never passed
+it down to the inner avatar. Hosts that set `fit` on the chatbot (e.g. an
+always-on site avatar whose framing was tuned elsewhere) saw it ignored. The
+prop is now destructured (default `contain`) and forwarded to `AniaAvatar`.
+
 ## [1.11.1]
 
 ### Fixed — portrait avatars no longer get squashed / cut off
