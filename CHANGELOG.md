@@ -2,6 +2,15 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.11.4]
+
+### Fixed — `AvatarChatbot` now live-updates `idleSpeed`/`talkSpeed` props
+`currentIdleSpeed`/`currentTalkSpeed` were seeded from the props only at mount, so
+a host changing `idleSpeed`/`talkSpeed` at runtime (e.g. a live tuner driving the
+always-on avatar) never reached the animation — only `AniaAvatar` updated live.
+Added effects that re-sync the effective speed when the props change; the
+in-widget speed slider still overrides locally between prop changes.
+
 ## [1.11.3]
 
 ### Added — `cropMinimized` prop (no-crop minimized avatar)

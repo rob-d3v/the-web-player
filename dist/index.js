@@ -16821,6 +16821,12 @@ const AvatarChatbot = ({
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [currentIdleSpeed, setCurrentIdleSpeed] = useState(idleSpeed);
   const [currentTalkSpeed, setCurrentTalkSpeed] = useState(talkSpeed);
+  useEffect(() => {
+    if (typeof idleSpeed === "number") setCurrentIdleSpeed(idleSpeed);
+  }, [idleSpeed]);
+  useEffect(() => {
+    if (typeof talkSpeed === "number") setCurrentTalkSpeed(talkSpeed);
+  }, [talkSpeed]);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [isCurrentlyMinimized, setIsCurrentlyMinimized] = useState(startMinimized);
   const [attachments, setAttachments] = useState([]);

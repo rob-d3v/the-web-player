@@ -267,6 +267,16 @@ export const AvatarChatbot = ({
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [currentIdleSpeed, setCurrentIdleSpeed] = useState(idleSpeed);
   const [currentTalkSpeed, setCurrentTalkSpeed] = useState(talkSpeed);
+  // Keep the effective speed in sync when the HOST changes the idleSpeed/talkSpeed
+  // props at runtime (e.g. a live tuner). Without this, currentIdleSpeed was only
+  // seeded once at mount and later prop changes never reached the avatar. The
+  // in-widget speed slider still overrides locally between prop changes.
+  useEffect(() => {
+    if (typeof idleSpeed === 'number') setCurrentIdleSpeed(idleSpeed);
+  }, [idleSpeed]);
+  useEffect(() => {
+    if (typeof talkSpeed === 'number') setCurrentTalkSpeed(talkSpeed);
+  }, [talkSpeed]);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [isCurrentlyMinimized, setIsCurrentlyMinimized] = useState(startMinimized);
   const [attachments, setAttachments] = useState([]);
