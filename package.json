@@ -1,6 +1,6 @@
 {
   "name": "ania-avatar-react",
-  "version": "1.11.5",
+  "version": "1.12.0",
   "description": "React component library for ANIA Avatar with TTS, STT, and chatbot integration",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -22,7 +22,7 @@
     "build": "vite build",
     "postbuild": "node scripts/sync-after-build.mjs",
     "preview": "vite preview",
-    "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs",
+    "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs && node examples/test-lip-sync-picker.mjs",
     "test:tts": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs",
     "prepublishOnly": "npm run build"
   },

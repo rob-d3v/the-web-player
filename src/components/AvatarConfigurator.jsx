@@ -43,6 +43,9 @@ const SECTIONS = [
     id: 'avatar',
     label: 'Avatar',
     fields: [
+      // Chave geral: desliga o widget inteiro sem apagar a configuração ao lado
+      // (útil enquanto se troca o arquivo .ania).
+      { key: 'disabled', label: 'Desativado (não carrega nada)', type: 'boolean', def: false },
       { key: 'avatarUrl', label: 'Avatar URL', type: 'text', def: '', placeholder: 'https://…/avatar.ania' },
       { key: 'avatarPassword', label: 'Avatar password', type: 'password', def: '' },
       { key: 'authToken', label: 'Auth token (Bearer)', type: 'password', def: '' },
@@ -75,6 +78,20 @@ const SECTIONS = [
       { key: 'postTalkDelay', label: 'Post-talk delay (ms)', type: 'number', def: 1500, min: 0, max: 10000, step: 50 },
       { key: 'minTalkDuration', label: 'Min talk duration (ms)', type: 'number', def: 800, min: 0, max: 10000, step: 50 },
       { key: 'minIdleDuration', label: 'Min idle duration (ms)', type: 'number', def: 400, min: 0, max: 10000, step: 50 },
+    ],
+  },
+  {
+    id: 'lipsync',
+    label: 'Lip sync',
+    fields: [
+      { key: 'lipSyncEnabled', label: 'Enable lip sync', type: 'boolean', def: false },
+      // Com a flag ligada, o widget procura no servidor a config publicada para
+      // este avatar (contentHash) e aplica a melhor. Ver services/lip-sync-api.js.
+      { key: 'lipSyncAutoFetch', label: 'Auto-fetch server config (best match)', type: 'boolean', def: true },
+      { key: 'lipSyncServerUrl', label: 'Server URL (blank = ANIA default)', type: 'text', def: '', placeholder: 'https://…' },
+      { key: 'lipSyncConfigId', label: 'Pin config id (optional)', type: 'text', def: '', placeholder: 'uuid da config' },
+      { key: 'lipSyncIntensity', label: 'Intensity', type: 'number', def: 0.6, min: 0, max: 1, step: 0.05 },
+      { key: 'lipSyncResponsiveness', label: 'Responsiveness', type: 'number', def: 0.5, min: 0, max: 1, step: 0.05 },
     ],
   },
   {

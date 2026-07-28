@@ -59,7 +59,7 @@ function flowInputAutocomplete(input) {
   return 'on';
 }
 
-export const AvatarChatbot = ({
+const AvatarChatbotWidget = ({
   avatarUrl,
   avatarPassword,
   avatarData,
@@ -151,7 +151,14 @@ export const AvatarChatbot = ({
   onSendMessage,
   // Lip sync props
   lipSyncEnabled = false,
+  // null = origem padrão da API ANIA (ver AniaAvatar / lip-sync-api.js).
   lipSyncServerUrl = null,
+  // Com lip sync ligado, baixa sozinho a melhor config publicada para este
+  // avatar (contentHash) e aplica; false = só o que veio no .ania + props.
+  lipSyncAutoFetch = true,
+  lipSyncConfigId = null,
+  lipSyncMaxCandidates = 5,
+  onLipSyncConfig = null,
   lipSyncIntensity = 0.6,
   lipSyncResponsiveness = 0.5,
   lipSyncSustainStyle = null,
@@ -1440,6 +1447,10 @@ export const AvatarChatbot = ({
       // Lip sync passthrough
       lipSyncEnabled,
       lipSyncServerUrl,
+      lipSyncAutoFetch,
+      lipSyncConfigId,
+      lipSyncMaxCandidates,
+      onLipSyncConfig,
       lipSyncIntensity,
       lipSyncResponsiveness,
       lipSyncSustainStyle,
@@ -1873,3 +1884,21 @@ export const AvatarChatbot = ({
     }
   );
 };
+
+AvatarChatbotWidget.displayName = 'AvatarChatbotWidget';
+
+/**
+ * Chave geral (`disabled`): com `disabled` o widget inteiro deixa de montar —
+ * sem avatar, sem download do modelo Piper/Robs (~44-84 MB), sem webhook, sem
+ * saudação automática, sem microfone. O host mantém o `<AvatarChatbot>` na
+ * árvore e vira UM prop (ex.: enquanto troca o arquivo `.ania`) em vez de
+ * comentar o bloco inteiro e perder a configuração.
+ *
+ * O guard vive neste wrapper: todo o widget está em `AvatarChatbotWidget`, então
+ * nenhum hook, efeito ou fetch chega a rodar quando `disabled` é true (um
+ * `return null` lá dentro rodaria depois dos hooks e ainda pagaria a rede).
+ */
+export const AvatarChatbot = ({ disabled = false, ...props }) =>
+  disabled ? null : jsx(AvatarChatbotWidget, { ...props });
+
+AvatarChatbot.displayName = 'AvatarChatbot';

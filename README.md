@@ -226,11 +226,51 @@ onnxruntime-web is loaded lazily on first synthesis and results are LRU-cached.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `lipSyncEnabled` | `boolean` | `false` | Enable real-time lip sync |
-| `lipSyncServerUrl` | `string` | - | Server URL for keyframe config |
+| `lipSyncAutoFetch` | `boolean` | `true` | Look the avatar up on the server and apply the best published config |
+| `lipSyncServerUrl` | `string` | `null` | API origin for the published configs. `null` = the default ANIA API |
+| `lipSyncConfigId` | `string` \| `null` | `null` | Pin one published config by id (skips the automatic pick) |
+| `lipSyncMaxCandidates` | `number` | `5` | How many published configs to download and compare |
+| `onLipSyncConfig` | `function` | - | `({ source, configId, configName, isActive, score, candidates, keyframes })` once a config is applied |
 | `lipSyncIntensity` | `number` | `0.6` | Sync intensity (0-1) |
 | `lipSyncResponsiveness` | `number` | `0.5` | Response speed (0.05-1) |
 | `lipSyncSustainStyle` | `'hold'` \| `'wiggle'` \| `null` | `null` | Mouth behaviour during stable speech. `null` = use server config (or `'wiggle'`). |
 | `lipSyncWiggleSpeed` | `number` \| `null` | `null` | Wiggle amplitude (1-6). `null` = use server config (or `5`). |
+
+**Where the keyframes come from.** Creators tune lip sync in the desktop player
+and publish the `.json` to the ANIA server, keyed by the avatar's `contentHash`.
+With `lipSyncEnabled`, the widget resolves that hash (from the `.ania`, or by
+hashing its frames) and fetches the avatar's published config — no host wiring
+needed.
+
+An avatar accepts up to 10 published configs, and in practice several are drafts:
+2 keyframes, or only the first slice of the talk range. The desktop shows a list
+and a human picks; on a customer's site there is nobody to ask, so the widget
+downloads the candidates and scores them — talk-range coverage first, then mouth
+amplitude, then keyframe density, with the owner's "active" flag as a tiebreak
+(never enough to rescue a half-covered config). Configs whose keyframes fall
+outside this file's talk range, or that never open the mouth, are thrown away.
+
+Fetching stays off the mount path: the avatar starts with whatever the `.ania`
+itself carries, and the server config swaps in when it arrives (8s timeout,
+failures ignored). To see what won:
+
+```jsx
+<AvatarChatbot
+  avatarUrl="https://…/avatar.ania"
+  lipSyncEnabled
+  onLipSyncConfig={(info) => console.log(info.configName, info.score)}
+/>
+```
+
+Pin a specific config once you have validated it:
+
+```jsx
+<AvatarChatbot lipSyncEnabled lipSyncConfigId="7f3c…" avatarUrl="…" />
+```
+
+The picker is exported too, for a host that wants to run it itself:
+`listLipSyncConfigs`, `fetchBestLipSyncConfig`, `fetchLipSyncConfigById`,
+`scoreLipSyncConfig`, `parseLipSyncConfig`, `computeContentHash`.
 
 #### Action Frame Props
 

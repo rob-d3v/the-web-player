@@ -26,7 +26,17 @@ export { useWakeWord } from './hooks/useWakeWord.js';
 
 // Services
 export { checkPiperStatus, initPiper, preloadPiper, disposePiper, piperSynthesize, getPiperStatus } from './services/piper-tts.js';
-export { fetchLipSyncConfig, buildOpennessMap } from './services/lip-sync-api.js';
+export {
+  fetchLipSyncConfig,
+  fetchLipSyncConfigById,
+  fetchBestLipSyncConfig,
+  listLipSyncConfigs,
+  parseLipSyncConfig,
+  scoreLipSyncConfig,
+  computeContentHash,
+  buildOpennessMap,
+  DEFAULT_LIP_SYNC_SERVER_URL
+} from './services/lip-sync-api.js';
 export { WakeWordEngine, getWakeWordEngine, isWakeWordSupported } from './services/wake-word.js';
 
 // Plugin architecture

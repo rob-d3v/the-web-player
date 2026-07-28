@@ -2,6 +2,75 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.12.0]
+
+### Added — lip sync configs are pulled from the server automatically (best one wins)
+Creators tune lip sync in the desktop player and publish the `.json` to the ANIA
+server, keyed by the avatar's `contentHash`. The desktop player fetches it on
+open; the web widget only did so if the host happened to pass `lipSyncServerUrl`
+— and even then it never applied, see the fix below. Now, with `lipSyncEnabled`,
+the widget looks the avatar up on its own and applies what it finds.
+
+- New `lipSyncAutoFetch` (default `true`): with lip sync on, resolve the avatar's
+  `contentHash` and fetch its published config. `lipSyncServerUrl` still overrides
+  the origin (`DEFAULT_LIP_SYNC_SERVER_URL` otherwise).
+- **Picks the best of several uploads.** An avatar accepts up to 10 published lip
+  sync configs and half of them are drafts. The desktop shows a list and a human
+  chooses; a widget on a customer's site has nobody to ask, so it downloads the
+  candidates and scores them (`scoreLipSyncConfig`): talk-range coverage first,
+  then mouth amplitude, then keyframe density, with the owner's "active" flag as
+  a tiebreak — never enough to rescue a half-covered config. Configs whose
+  keyframes fall outside this file's talk range, or that never open the mouth,
+  are discarded.
+- `lipSyncConfigId` pins one published config and skips the auto pick;
+  `lipSyncMaxCandidates` (default 5) caps how many are downloaded.
+- `onLipSyncConfig({ source, configId, configName, isActive, score, candidates,
+  keyframes })` reports which config ended up driving the mouth.
+- New exports: `fetchBestLipSyncConfig`, `listLipSyncConfigs`,
+  `fetchLipSyncConfigById`, `parseLipSyncConfig`, `scoreLipSyncConfig`,
+  `computeContentHash`, `DEFAULT_LIP_SYNC_SERVER_URL`.
+- `<AvatarConfigurator>` gained a **Lip sync** section.
+- Fetching runs off the mount path: the avatar plays with the `.ania`'s own
+  settings and the server config swaps in when it lands. Every request has an
+  8s timeout, failures are swallowed, and a late response is dropped if the
+  player was replaced meanwhile.
+
+### Fixed — server lip sync config was fetched and then silently ignored
+`/json-config/fetch` returns `jsonData` as a **JSON string** (the raw R2 file),
+not an object. The service handed that string straight to the component, so
+`config.lips_sync_keyframes` was `undefined` and the openness map always fell
+back to the file's own. Configs published from the desktop player never took
+effect in the browser. `parseLipSyncConfig` now parses it (and unwraps the
+`{ config: … }` / `{ lipsync: … }` shapes older uploads used).
+
+### Added — `contentHash` fallback for files that don't carry one
+`computeContentHash(frames)` — SHA-256 over the concatenated frame strings, the
+same value the desktop (`license_verifier.calculate_content_hash`) and the web
+studio (`computeContentHash`) compute. Used only when the `.ania` has neither a
+top-level `contentHash` nor `license.contentHash`, so an older export can still
+find its config on the server.
+
+## [1.11.6]
+
+### Added — `disabled` kill switch on `<AvatarChatbot>` and `<AniaAvatar>`
+Turning the avatar off used to mean commenting the whole JSX block out (and
+losing the ~40 props configured with it) or unmounting it from the host's
+render logic. Now a single prop does it:
+
+```jsx
+<AvatarChatbot disabled avatarUrl="…" ttsProvider="piper" /* … */ />
+```
+
+- `disabled` (default `false`) renders **nothing** and mounts nothing: no
+  `.ania` fetch/decrypt, no canvas, no Piper/Robs model download, no webhook,
+  no auto-greeting, no microphone.
+- The guard lives in a thin wrapper around the real component, so no hook,
+  effect or network call runs while disabled — a `return null` inside the
+  component would run after the hooks and still pay for the downloads.
+- `<AvatarConfigurator>` gained a matching **"Desativado (não carrega nada)"**
+  toggle in the Avatar section; it exports as `disabled={true}` like any other
+  prop.
+
 ## [1.11.5]
 
 ### Fixed — explicit error for PERSONAL/licensed `.ania` files (web-incompatible)

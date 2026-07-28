@@ -12329,18 +12329,184 @@ const formatBytes = (bytes) => {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 };
-const fetchLipSyncConfig = async (serverUrl, contentHash) => {
+const DEFAULT_LIP_SYNC_SERVER_URL = "https://0iadasasasmasmdams2ma22xxhhh2.housestudio.online";
+const DEFAULT_MAX_CANDIDATES = 5;
+const DEFAULT_TIMEOUT_MS = 8e3;
+const trimUrl = (serverUrl) => String(serverUrl || "").replace(/\/+$/, "");
+const withTimeout = async (url, timeoutMs) => {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
-    const url = `${serverUrl}/api/avatars/json-config/fetch?contentHash=${encodeURIComponent(contentHash)}&type=lips_sync`;
-    const response = await fetch(url);
+    return await fetch(url, controller ? { signal: controller.signal } : void 0);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+const parseLipSyncConfig = (raw) => {
+  if (!raw) return null;
+  let data = raw;
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch (err) {
+      console.warn("[LipSyncAPI] jsonData is not valid JSON:", err);
+      return null;
+    }
+  }
+  if (!data || typeof data !== "object") return null;
+  if (!data.lips_sync_keyframes && data.config && typeof data.config === "object") {
+    data = data.config;
+  }
+  if (!data.lips_sync_keyframes && data.lipsync && typeof data.lipsync === "object") {
+    data = data.lipsync;
+  }
+  return data;
+};
+const computeContentHash = async (frames) => {
+  if (!Array.isArray(frames) || frames.length === 0) return null;
+  if (typeof crypto === "undefined" || !crypto.subtle) return null;
+  try {
+    const encoder = new TextEncoder();
+    const parts = frames.map((f) => encoder.encode(typeof f === "string" ? f : String(f)));
+    const total = parts.reduce((sum, p) => sum + p.length, 0);
+    const buf = new Uint8Array(total);
+    let offset = 0;
+    for (const part of parts) {
+      buf.set(part, offset);
+      offset += part.length;
+    }
+    const digest = await crypto.subtle.digest("SHA-256", buf);
+    const bytes = new Uint8Array(digest);
+    let hex = "";
+    for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
+    return hex;
+  } catch (err) {
+    console.warn("[LipSyncAPI] Failed to compute contentHash:", err);
+    return null;
+  }
+};
+const fetchLipSyncConfig = async (serverUrl, contentHash, options = {}) => {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  try {
+    const url = `${trimUrl(serverUrl)}/api/avatars/json-config/fetch?contentHash=${encodeURIComponent(contentHash)}&type=lips_sync`;
+    const response = await withTimeout(url, timeoutMs);
     if (!response.ok) return null;
     const data = await response.json();
     if (!data.found || !data.jsonData) return null;
-    return data.jsonData;
+    return parseLipSyncConfig(data.jsonData);
   } catch (err) {
     console.warn("[LipSyncAPI] Failed to fetch config:", err);
     return null;
   }
+};
+const fetchLipSyncConfigById = async (serverUrl, configId, options = {}) => {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  try {
+    const url = `${trimUrl(serverUrl)}/api/avatars/json-config/fetch?configId=${encodeURIComponent(configId)}`;
+    const response = await withTimeout(url, timeoutMs);
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (!data.found || !data.jsonData) return null;
+    return parseLipSyncConfig(data.jsonData);
+  } catch (err) {
+    console.warn("[LipSyncAPI] Failed to fetch config by id:", err);
+    return null;
+  }
+};
+const listLipSyncConfigs = async (serverUrl, contentHash, options = {}) => {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  try {
+    const url = `${trimUrl(serverUrl)}/api/avatars/json-config/list?contentHash=${encodeURIComponent(contentHash)}&type=lips_sync`;
+    const response = await withTimeout(url, timeoutMs);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.warn("[LipSyncAPI] Failed to list configs:", err);
+    return [];
+  }
+};
+const scoreLipSyncConfig = (config, ctx = {}) => {
+  if (!config || typeof config !== "object") return -Infinity;
+  const kf = config.lips_sync_keyframes;
+  if (!Array.isArray(kf) || kf.length === 0) return -Infinity;
+  const valid = [];
+  for (const entry of kf) {
+    if (!Array.isArray(entry) || entry.length < 2) continue;
+    const idx = Number(entry[0]);
+    const val = Number(entry[1]);
+    if (!Number.isFinite(idx) || !Number.isFinite(val)) continue;
+    valid.push([idx, val]);
+  }
+  if (valid.length === 0) return -Infinity;
+  const talkLow = Number.isFinite(ctx.talkLow) ? ctx.talkLow : null;
+  const talkHigh = Number.isFinite(ctx.talkHigh) ? ctx.talkHigh : null;
+  let score = 0;
+  if (talkLow != null && talkHigh != null && talkHigh > talkLow) {
+    const span = talkHigh - talkLow;
+    const inRange = valid.filter(([i]) => i >= talkLow && i <= talkHigh);
+    if (inRange.length === 0) {
+      return -Infinity;
+    }
+    const indices = inRange.map(([i]) => i);
+    const covered = (Math.max(...indices) - Math.min(...indices)) / span;
+    score += Math.max(0, Math.min(1, covered)) * 45;
+    score -= (valid.length - inRange.length) * 1.5;
+  } else {
+    score += 22;
+  }
+  const values = valid.map(([, v]) => v);
+  const amplitude = Math.max(...values) - Math.min(...values);
+  score += Math.max(0, Math.min(1, amplitude)) * 20;
+  score += Math.min(1, valid.length / 15) * 20;
+  if (ctx.isActive) score += 12;
+  if (Number.isFinite(ctx.order)) score += Math.max(0, 5 - ctx.order);
+  if (Number.isFinite(Number(config.lips_sync_sync_intensity))) score += 2;
+  if (Number.isFinite(Number(config.lips_sync_responsiveness))) score += 2;
+  if (config.lips_sync_sustain_style) score += 2;
+  if (Number.isFinite(Number(config.lips_sync_wiggle_speed))) score += 2;
+  if (values.some((v) => v < 0 || v > 1)) score -= 15;
+  return score;
+};
+const fetchBestLipSyncConfig = async (serverUrl, contentHash, options = {}) => {
+  const {
+    talkLow = null,
+    talkHigh = null,
+    maxCandidates = DEFAULT_MAX_CANDIDATES,
+    timeoutMs = DEFAULT_TIMEOUT_MS
+  } = options;
+  if (!serverUrl || !contentHash) return null;
+  const listed = await listLipSyncConfigs(serverUrl, contentHash, { timeoutMs });
+  if (!listed.length) {
+    const config = await fetchLipSyncConfig(serverUrl, contentHash, { timeoutMs });
+    if (!config) return null;
+    const score = scoreLipSyncConfig(config, { talkLow, talkHigh, isActive: true, order: 0 });
+    if (score === -Infinity) return null;
+    return { config, configId: null, configName: null, isActive: true, score, candidates: 1 };
+  }
+  const ordered = [
+    ...listed.filter((c) => c && c.isActive),
+    ...listed.filter((c) => c && !c.isActive)
+  ].filter((c) => c && c.configId);
+  const candidates = ordered.slice(0, Math.max(1, maxCandidates));
+  const downloaded = await Promise.all(
+    candidates.map(async (meta, order) => {
+      const config = await fetchLipSyncConfigById(serverUrl, meta.configId, { timeoutMs });
+      if (!config) return null;
+      return {
+        config,
+        configId: meta.configId,
+        configName: meta.configName || null,
+        isActive: !!meta.isActive,
+        score: scoreLipSyncConfig(config, { talkLow, talkHigh, isActive: meta.isActive, order }),
+        candidates: candidates.length
+      };
+    })
+  );
+  const usable = downloaded.filter((d) => d && d.score !== -Infinity);
+  if (!usable.length) return null;
+  usable.sort((a, b) => b.score - a.score);
+  return usable[0];
 };
 const buildOpennessMap = (keyframes, talkLow, talkHigh) => {
   const talkSpan = talkHigh - talkLow;
@@ -12369,7 +12535,7 @@ const buildOpennessMap = (keyframes, talkLow, talkHigh) => {
   }
   return result;
 };
-const AniaAvatar = forwardRef(({
+const AniaAvatarPlayer = forwardRef(({
   avatarUrl,
   avatarPassword,
   avatarData: externalAvatarData,
@@ -12422,7 +12588,23 @@ const AniaAvatar = forwardRef(({
   mobileBreakpoint = 768,
   // Lip sync props
   lipSyncEnabled = false,
+  // Origem da API que guarda as configs de lip sync enviadas pelos criadores.
+  // null = usa a mesma origem padrão do player desktop
+  // (DEFAULT_LIP_SYNC_SERVER_URL). Aponte para um proxy próprio se preferir.
   lipSyncServerUrl = null,
+  // Com lip sync ligado, procura sozinho uma config no servidor (pelo
+  // contentHash do avatar) e aplica a MELHOR que encontrar — o mesmo que o
+  // desktop faz ao abrir o arquivo, só que sem lista para o usuário escolher.
+  // false = só usa o que veio dentro do .ania e as props.
+  lipSyncAutoFetch = true,
+  // Fixa uma config específica (id do /json-config/list) e pula a escolha
+  // automática — útil para travar a versão que você já validou.
+  lipSyncConfigId = null,
+  // Quantas configs baixar para comparar antes de escolher (servidor guarda 10).
+  lipSyncMaxCandidates = 5,
+  // ({ source, configId, configName, isActive, score, candidates, keyframes })
+  // depois que uma config é aplicada — para log/telemetria do host.
+  onLipSyncConfig = null,
   lipSyncIntensity = 0.6,
   lipSyncResponsiveness = 0.5,
   // A3 sustain (desktop parity): how the mouth behaves during stable speech.
@@ -12875,11 +13057,62 @@ const AniaAvatar = forwardRef(({
               wiggleSpeed
             );
           };
-          if (lipSyncServerUrl && avatarData.contentHash) {
-            fetchLipSyncConfig(lipSyncServerUrl, avatarData.contentHash).then((lipConfig) => applyLipSync(lipConfig)).catch((err) => {
+          const serverUrl = lipSyncAutoFetch ? lipSyncServerUrl || DEFAULT_LIP_SYNC_SERVER_URL : lipSyncServerUrl;
+          if (serverUrl) {
+            const talkLowForFetch = Math.floor(avatarData.animation && avatarData.animation.talkRangeLowValue || 327);
+            const talkHighForFetch = Math.floor(avatarData.animation && avatarData.animation.talkRangeHighValue || 834);
+            const resolveContentHash = async () => {
+              if (avatarData.contentHash) return avatarData.contentHash;
+              if (avatarData.license && avatarData.license.contentHash) return avatarData.license.contentHash;
+              return computeContentHash(avatarData.video && avatarData.video.frames);
+            };
+            resolveContentHash().then((contentHash) => {
+              if (!contentHash) return null;
+              if (lipSyncConfigId) {
+                return fetchLipSyncConfigById(serverUrl, lipSyncConfigId).then(
+                  (config) => config ? { config, configId: lipSyncConfigId, configName: null, isActive: false, score: null, candidates: 1 } : null
+                );
+              }
+              return fetchBestLipSyncConfig(serverUrl, contentHash, {
+                talkLow: talkLowForFetch,
+                talkHigh: talkHighForFetch,
+                maxCandidates: lipSyncMaxCandidates
+              });
+            }).then((best) => {
+              if (playerRef.current !== player) return;
+              applyLipSync(best ? best.config : null);
+              if (best) {
+                console.log(
+                  `[AniaAvatar] Lip sync config from server: "${best.configName || best.configId || "default"}" (score ${best.score == null ? "n/a" : best.score.toFixed(1)} de ${best.candidates} candidata(s))`
+                );
+                if (onLipSyncConfig) {
+                  onLipSyncConfig({
+                    source: "server",
+                    configId: best.configId,
+                    configName: best.configName,
+                    isActive: best.isActive,
+                    score: best.score,
+                    candidates: best.candidates,
+                    keyframes: best.config && best.config.lips_sync_keyframes || []
+                  });
+                }
+              } else if (onLipSyncConfig) {
+                onLipSyncConfig({
+                  source: fileOpennessMap ? "file" : "props",
+                  configId: null,
+                  configName: null,
+                  isActive: false,
+                  score: null,
+                  candidates: 0,
+                  keyframes: []
+                });
+              }
+            }).catch((err) => {
               console.warn("[AniaAvatar] Lip sync config fetch failed:", err);
+              if (playerRef.current !== player) return;
               applyLipSync(null);
             });
+            applyLipSync(null);
           } else {
             applyLipSync(null);
           }
@@ -13294,6 +13527,11 @@ const AniaAvatar = forwardRef(({
   }
   return avatarNode;
 });
+AniaAvatarPlayer.displayName = "AniaAvatarPlayer";
+const AniaAvatar = forwardRef(
+  ({ disabled = false, ...props }, ref) => disabled ? null : jsx(AniaAvatarPlayer, { ...props, ref })
+);
+AniaAvatar.displayName = "AniaAvatar";
 const escapeXml = (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 const professionalTTSRequest = async (text, provider, config) => {
   try {
@@ -16763,7 +17001,7 @@ function flowInputAutocomplete(input) {
   if (/name|nome/.test(key)) return "name";
   return "on";
 }
-const AvatarChatbot = ({
+const AvatarChatbotWidget = ({
   avatarUrl,
   avatarPassword,
   avatarData,
@@ -16855,7 +17093,14 @@ const AvatarChatbot = ({
   onSendMessage,
   // Lip sync props
   lipSyncEnabled = false,
+  // null = origem padrão da API ANIA (ver AniaAvatar / lip-sync-api.js).
   lipSyncServerUrl = null,
+  // Com lip sync ligado, baixa sozinho a melhor config publicada para este
+  // avatar (contentHash) e aplica; false = só o que veio no .ania + props.
+  lipSyncAutoFetch = true,
+  lipSyncConfigId = null,
+  lipSyncMaxCandidates = 5,
+  onLipSyncConfig = null,
   lipSyncIntensity = 0.6,
   lipSyncResponsiveness = 0.5,
   lipSyncSustainStyle = null,
@@ -17946,6 +18191,10 @@ const AvatarChatbot = ({
       // Lip sync passthrough
       lipSyncEnabled,
       lipSyncServerUrl,
+      lipSyncAutoFetch,
+      lipSyncConfigId,
+      lipSyncMaxCandidates,
+      onLipSyncConfig,
       lipSyncIntensity,
       lipSyncResponsiveness,
       lipSyncSustainStyle,
@@ -18359,11 +18608,17 @@ const AvatarChatbot = ({
     }
   );
 };
+AvatarChatbotWidget.displayName = "AvatarChatbotWidget";
+const AvatarChatbot = ({ disabled = false, ...props }) => disabled ? null : jsx(AvatarChatbotWidget, { ...props });
+AvatarChatbot.displayName = "AvatarChatbot";
 const SECTIONS = [
   {
     id: "avatar",
     label: "Avatar",
     fields: [
+      // Chave geral: desliga o widget inteiro sem apagar a configuração ao lado
+      // (útil enquanto se troca o arquivo .ania).
+      { key: "disabled", label: "Desativado (não carrega nada)", type: "boolean", def: false },
       { key: "avatarUrl", label: "Avatar URL", type: "text", def: "", placeholder: "https://…/avatar.ania" },
       { key: "avatarPassword", label: "Avatar password", type: "password", def: "" },
       { key: "authToken", label: "Auth token (Bearer)", type: "password", def: "" },
@@ -18396,6 +18651,20 @@ const SECTIONS = [
       { key: "postTalkDelay", label: "Post-talk delay (ms)", type: "number", def: 1500, min: 0, max: 1e4, step: 50 },
       { key: "minTalkDuration", label: "Min talk duration (ms)", type: "number", def: 800, min: 0, max: 1e4, step: 50 },
       { key: "minIdleDuration", label: "Min idle duration (ms)", type: "number", def: 400, min: 0, max: 1e4, step: 50 }
+    ]
+  },
+  {
+    id: "lipsync",
+    label: "Lip sync",
+    fields: [
+      { key: "lipSyncEnabled", label: "Enable lip sync", type: "boolean", def: false },
+      // Com a flag ligada, o widget procura no servidor a config publicada para
+      // este avatar (contentHash) e aplica a melhor. Ver services/lip-sync-api.js.
+      { key: "lipSyncAutoFetch", label: "Auto-fetch server config (best match)", type: "boolean", def: true },
+      { key: "lipSyncServerUrl", label: "Server URL (blank = ANIA default)", type: "text", def: "", placeholder: "https://…" },
+      { key: "lipSyncConfigId", label: "Pin config id (optional)", type: "text", def: "", placeholder: "uuid da config" },
+      { key: "lipSyncIntensity", label: "Intensity", type: "number", def: 0.6, min: 0, max: 1, step: 0.05 },
+      { key: "lipSyncResponsiveness", label: "Responsiveness", type: "number", def: 0.5, min: 0, max: 1, step: 0.05 }
     ]
   },
   {
@@ -19066,6 +19335,7 @@ export {
   CHATBOT_TEMPLATE_BY_ID,
   COMMAND_LIST,
   SECTIONS as CONFIGURATOR_SECTIONS,
+  DEFAULT_LIP_SYNC_SERVER_URL,
   DEFAULT_LOCALE,
   FALLBACK_LOCALE,
   PLUGIN_KINDS,
@@ -19078,6 +19348,7 @@ export {
   buildOpennessMap,
   checkPiperStatus,
   clearAvatarCache,
+  computeContentHash,
   toExportProps as configuratorExportProps,
   toJSON as configuratorToJSON,
   toJSX as configuratorToJSX,
@@ -19086,7 +19357,9 @@ export {
   deleteCachedAvatar,
   disposePiper,
   executeCommand,
+  fetchBestLipSyncConfig,
   fetchLipSyncConfig,
+  fetchLipSyncConfigById,
   getNode as flowGetNode,
   initialState as flowInitialState,
   interpolate as flowInterpolate,
@@ -19108,13 +19381,16 @@ export {
   installPostMessageControl,
   isPlainMarketAnia,
   isWakeWordSupported,
+  listLipSyncConfigs,
   matchesHotkey,
   parseCommandLine,
   parseHotkey,
+  parseLipSyncConfig,
   piperSynthesize,
   playActionAudio,
   preloadPiper,
   registerBuiltins,
+  scoreLipSyncConfig,
   setCachedAvatar,
   sttBrowserPlugin,
   sttGooglePlugin,

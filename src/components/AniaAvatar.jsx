@@ -7,12 +7,18 @@ import { createTranslator } from '../i18n/index.js';
 import { decryptAniaFile, isPlainMarketAnia, inspectAvatarFrames } from '../utils/crypto.js';
 import { calculateOptimalSpeeds } from '../utils/speed-calculator.js';
 import { getCachedAvatar, setCachedAvatar, deleteCachedAvatar } from '../utils/avatar-cache.js';
-import { fetchLipSyncConfig, buildOpennessMap } from '../services/lip-sync-api.js';
+import {
+  fetchLipSyncConfigById,
+  fetchBestLipSyncConfig,
+  computeContentHash,
+  buildOpennessMap,
+  DEFAULT_LIP_SYNC_SERVER_URL
+} from '../services/lip-sync-api.js';
 
 // forwardRef: useAniaAvatarRef expects `ref.current.playerRef` — without the
 // wrapper, React strips `ref` from function components and the hook's
 // setTalking/triggerAction/cancelAction silently no-op on the plain player.
-export const AniaAvatar = forwardRef(({
+const AniaAvatarPlayer = forwardRef(({
   avatarUrl,
   avatarPassword,
   avatarData: externalAvatarData,
@@ -65,7 +71,23 @@ export const AniaAvatar = forwardRef(({
   mobileBreakpoint = 768,
   // Lip sync props
   lipSyncEnabled = false,
+  // Origem da API que guarda as configs de lip sync enviadas pelos criadores.
+  // null = usa a mesma origem padrão do player desktop
+  // (DEFAULT_LIP_SYNC_SERVER_URL). Aponte para um proxy próprio se preferir.
   lipSyncServerUrl = null,
+  // Com lip sync ligado, procura sozinho uma config no servidor (pelo
+  // contentHash do avatar) e aplica a MELHOR que encontrar — o mesmo que o
+  // desktop faz ao abrir o arquivo, só que sem lista para o usuário escolher.
+  // false = só usa o que veio dentro do .ania e as props.
+  lipSyncAutoFetch = true,
+  // Fixa uma config específica (id do /json-config/list) e pula a escolha
+  // automática — útil para travar a versão que você já validou.
+  lipSyncConfigId = null,
+  // Quantas configs baixar para comparar antes de escolher (servidor guarda 10).
+  lipSyncMaxCandidates = 5,
+  // ({ source, configId, configName, isActive, score, candidates, keyframes })
+  // depois que uma config é aplicada — para log/telemetria do host.
+  onLipSyncConfig = null,
   lipSyncIntensity = 0.6,
   lipSyncResponsiveness = 0.5,
   // A3 sustain (desktop parity): how the mouth behaves during stable speech.
@@ -642,13 +664,89 @@ export const AniaAvatar = forwardRef(({
             );
           };
 
-          if (lipSyncServerUrl && avatarData.contentHash) {
-            fetchLipSyncConfig(lipSyncServerUrl, avatarData.contentHash)
-              .then((lipConfig) => applyLipSync(lipConfig))
+          // Config do servidor: o criador (ou a comunidade) sobe o .json de lip
+          // sync pelo player desktop / studio, e ele fica atrelado ao
+          // contentHash do avatar. Buscamos sozinhos, como o desktop faz ao
+          // abrir o arquivo — só que aqui não há ninguém para escolher entre os
+          // uploads, então `fetchBestLipSyncConfig` baixa os candidatos e fica
+          // com o de melhor cobertura/amplitude (ver scoreLipSyncConfig).
+          //
+          // Assíncrono de propósito: o avatar já está tocando com o que veio no
+          // arquivo, e a config do servidor entra por cima quando chegar. Nada
+          // aqui pode atrasar o primeiro frame.
+          const serverUrl = lipSyncAutoFetch
+            ? (lipSyncServerUrl || DEFAULT_LIP_SYNC_SERVER_URL)
+            : lipSyncServerUrl;
+
+          if (serverUrl) {
+            const talkLowForFetch = Math.floor((avatarData.animation && avatarData.animation.talkRangeLowValue) || 327);
+            const talkHighForFetch = Math.floor((avatarData.animation && avatarData.animation.talkRangeHighValue) || 834);
+
+            // O .ania do studio já traz contentHash; o licenciado traz dentro de
+            // `license`. Só no último caso recalculamos a partir dos frames
+            // (mesma conta do desktop e do studio).
+            const resolveContentHash = async () => {
+              if (avatarData.contentHash) return avatarData.contentHash;
+              if (avatarData.license && avatarData.license.contentHash) return avatarData.license.contentHash;
+              return computeContentHash(avatarData.video && avatarData.video.frames);
+            };
+
+            resolveContentHash()
+              .then((contentHash) => {
+                if (!contentHash) return null;
+                if (lipSyncConfigId) {
+                  return fetchLipSyncConfigById(serverUrl, lipSyncConfigId).then((config) =>
+                    config
+                      ? { config, configId: lipSyncConfigId, configName: null, isActive: false, score: null, candidates: 1 }
+                      : null
+                  );
+                }
+                return fetchBestLipSyncConfig(serverUrl, contentHash, {
+                  talkLow: talkLowForFetch,
+                  talkHigh: talkHighForFetch,
+                  maxCandidates: lipSyncMaxCandidates
+                });
+              })
+              .then((best) => {
+                // Componente desmontado (ou avatar trocado) enquanto a rede
+                // respondia: aplicar agora mexeria num player morto.
+                if (playerRef.current !== player) return;
+                applyLipSync(best ? best.config : null);
+                if (best) {
+                  console.log(
+                    `[AniaAvatar] Lip sync config from server: "${best.configName || best.configId || 'default'}"` +
+                    ` (score ${best.score == null ? 'n/a' : best.score.toFixed(1)} de ${best.candidates} candidata(s))`
+                  );
+                  if (onLipSyncConfig) {
+                    onLipSyncConfig({
+                      source: 'server',
+                      configId: best.configId,
+                      configName: best.configName,
+                      isActive: best.isActive,
+                      score: best.score,
+                      candidates: best.candidates,
+                      keyframes: (best.config && best.config.lips_sync_keyframes) || []
+                    });
+                  }
+                } else if (onLipSyncConfig) {
+                  onLipSyncConfig({
+                    source: fileOpennessMap ? 'file' : 'props',
+                    configId: null,
+                    configName: null,
+                    isActive: false,
+                    score: null,
+                    candidates: 0,
+                    keyframes: []
+                  });
+                }
+              })
               .catch((err) => {
                 console.warn('[AniaAvatar] Lip sync config fetch failed:', err);
+                if (playerRef.current !== player) return;
                 applyLipSync(null);
               });
+            // Enquanto a rede responde, vale o que veio no arquivo/props.
+            applyLipSync(null);
           } else {
             applyLipSync(null);
           }
@@ -1118,3 +1216,21 @@ export const AniaAvatar = forwardRef(({
   }
   return avatarNode;
 });
+
+AniaAvatarPlayer.displayName = 'AniaAvatarPlayer';
+
+/**
+ * Chave geral (`disabled`): com `disabled` o componente não monta NADA — nada de
+ * fetch do `.ania`, decrypt, canvas ou portal. O host mantém o JSX no lugar e
+ * vira um único prop (ex.: enquanto troca o arquivo `.ania`) em vez de comentar
+ * o bloco inteiro.
+ *
+ * O guard vive neste wrapper, e não dentro do player, porque um `return null`
+ * depois dos hooks ainda pagaria download/decrypt do avatar — e um early return
+ * antes deles quebraria as regras de hooks.
+ */
+export const AniaAvatar = forwardRef(({ disabled = false, ...props }, ref) =>
+  disabled ? null : jsx(AniaAvatarPlayer, { ...props, ref })
+);
+
+AniaAvatar.displayName = 'AniaAvatar';

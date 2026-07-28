@@ -33,6 +33,13 @@ export interface PiperStatus {
 // ===== Component Props =====
 
 export interface AniaAvatarProps {
+  /**
+   * Kill switch. When `true` the component renders nothing and mounts nothing —
+   * no `.ania` download/decrypt, no canvas, no TTS model fetch, no webhook.
+   * Keep the JSX in place and flip this one prop (e.g. while swapping the
+   * `.ania` file) instead of commenting the whole block out. Default `false`.
+   */
+  disabled?: boolean;
   avatarUrl?: string;
   avatarPassword?: string;
   avatarData?: any;
@@ -88,6 +95,17 @@ export interface AniaAvatarProps {
   lipSyncSustainStyle?: 'hold' | 'wiggle' | null;
   /** Wiggle amplitude (1..6). null = use server config / 5. */
   lipSyncWiggleSpeed?: number | null;
+  /**
+   * With lip sync on, look the avatar up on the ANIA server (by contentHash) and
+   * apply the BEST published lip sync config found there. Default `true`.
+   */
+  lipSyncAutoFetch?: boolean;
+  /** Pin one published config by id (from `/json-config/list`), skipping the auto pick. */
+  lipSyncConfigId?: string | null;
+  /** How many published configs to download and compare (server keeps up to 10). Default 5. */
+  lipSyncMaxCandidates?: number;
+  /** Fired once a lip sync config is applied — which one, and how it scored. */
+  onLipSyncConfig?: (info: LipSyncConfigInfo) => void;
   // Action frames
   actions?: ActionConfig[];
   enableActionHotkeys?: boolean;
@@ -787,7 +805,54 @@ export function disposePiper(): void;
 
 // ===== Lip Sync Exports =====
 
-export function fetchLipSyncConfig(serverUrl: string, contentHash: string): Promise<any | null>;
+/** One lip sync config published on the ANIA server for an avatar. */
+export interface LipSyncConfigListItem {
+  configId: string;
+  configName: string;
+  isActive: boolean;
+}
+
+/** The config that ended up driving the mouth, and why it won. */
+export interface LipSyncConfigInfo {
+  /** 'server' = downloaded; 'file' = authored into the .ania; 'props' = component props only. */
+  source: 'server' | 'file' | 'props';
+  configId: string | null;
+  configName: string | null;
+  isActive: boolean;
+  /** `scoreLipSyncConfig` result (null when not scored, e.g. a pinned configId). */
+  score: number | null;
+  /** How many published configs were downloaded and compared. */
+  candidates: number;
+  keyframes: [number, number][];
+}
+
+/** Default ANIA API origin used when `lipSyncServerUrl` is not set. */
+export const DEFAULT_LIP_SYNC_SERVER_URL: string;
+
+export function fetchLipSyncConfig(serverUrl: string, contentHash: string, options?: { timeoutMs?: number }): Promise<any | null>;
+export function fetchLipSyncConfigById(serverUrl: string, configId: string, options?: { timeoutMs?: number }): Promise<any | null>;
+export function listLipSyncConfigs(serverUrl: string, contentHash: string, options?: { timeoutMs?: number }): Promise<LipSyncConfigListItem[]>;
+export function parseLipSyncConfig(raw: string | object | null): any | null;
+/** Quality score for a config; higher wins, `-Infinity` = unusable. */
+export function scoreLipSyncConfig(
+  config: any,
+  ctx?: { talkLow?: number; talkHigh?: number; isActive?: boolean; order?: number }
+): number;
+/** List → download candidates → score → return the best published config. */
+export function fetchBestLipSyncConfig(
+  serverUrl: string,
+  contentHash: string,
+  options?: { talkLow?: number; talkHigh?: number; maxCandidates?: number; timeoutMs?: number }
+): Promise<{
+  config: any;
+  configId: string | null;
+  configName: string | null;
+  isActive: boolean;
+  score: number;
+  candidates: number;
+} | null>;
+/** SHA-256 over the concatenated frame strings — the avatar's server key. */
+export function computeContentHash(frames: string[]): Promise<string | null>;
 export function buildOpennessMap(keyframes: [number, number][], talkLow: number, talkHigh: number): number[];
 
 // ===== Utility Exports =====
