@@ -119,6 +119,57 @@ export const ttsPiperPlugin = {
   },
 };
 
+/**
+ * Robs Voice — on-device neural pt-BR voice (BETA). Two ONNX graphs behind a
+ * rule-based text frontend; wraps the robs-tts service. Config (ctx.config):
+ *   robsVoiceUrl (base dir containing acoustic.onnx/vocoder.onnx/robsvoice.json)
+ *   OR robsAcousticUrl + robsVocoderUrl + robsManifestUrl (explicit).
+ */
+const robsVoiceArg = (cfg) => (
+  cfg.robsVoiceUrl != null
+    ? cfg.robsVoiceUrl
+    : { acousticUrl: cfg.robsAcousticUrl, vocoderUrl: cfg.robsVocoderUrl, manifestUrl: cfg.robsManifestUrl }
+);
+const hasRobsVoice = (cfg) => Boolean(cfg.robsVoiceUrl || (cfg.robsAcousticUrl && cfg.robsVocoderUrl && cfg.robsManifestUrl));
+
+export const ttsRobsVoicePlugin = {
+  id: 'tts-robsvoice',
+  name: 'Robs Voice (on-device ONNX, beta)',
+  version: '1.4.0',
+  kind: 'tts',
+  builtin: true,
+  description: 'Browser-side neural pt-BR TTS (Matcha + Vocos) via robs-tts + onnxruntime-web.',
+  async init(ctx) {
+    const cfg = (ctx && ctx.config) || {};
+    if (hasRobsVoice(cfg)) {
+      const { preloadRobs } = await import('../services/robs-tts.js');
+      // fire-and-forget; synthesize() awaits readiness internally
+      preloadRobs(robsVoiceArg(cfg)).catch(() => {});
+    }
+  },
+  createEngine: (ctx) => {
+    const cfg = (ctx && ctx.config) || {};
+    let current = null;
+    return {
+      async synthesize(text) {
+        const { initRobs, robsSynthesize } = await import('../services/robs-tts.js');
+        if (hasRobsVoice(cfg)) await initRobs(robsVoiceArg(cfg));
+        return robsSynthesize(text);
+      },
+      async speak(text, options = {}) {
+        const { audioUrl } = await this.synthesize(text, options);
+        if (current) { try { current.pause(); } catch (e) {} }
+        const audio = new Audio(audioUrl);
+        current = audio;
+        audio.addEventListener('ended', () => URL.revokeObjectURL(audioUrl), { once: true });
+        await audio.play();
+        return audio;
+      },
+      stop() { if (current) { try { current.pause(); } catch (e) {} current = null; } },
+    };
+  },
+};
+
 // ---------------------------------------------------------------------------
 // STT providers
 // ---------------------------------------------------------------------------
@@ -180,6 +231,7 @@ export const BUILTIN_PLUGINS = [
   ttsGooglePlugin,
   ttsAzurePlugin,
   ttsPiperPlugin,
+  ttsRobsVoicePlugin,
   sttBrowserPlugin,
   sttGooglePlugin,
   actionAudioPlugin,
@@ -196,6 +248,7 @@ export const TTS_PROVIDER_TO_PLUGIN = {
   google: 'tts-google',
   azure: 'tts-azure',
   piper: 'tts-piper',
+  robsvoice: 'tts-robsvoice',
 };
 
 export const STT_PROVIDER_TO_PLUGIN = {

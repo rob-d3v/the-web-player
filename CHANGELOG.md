@@ -2,6 +2,29 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.11.5]
+
+### Fixed — explicit error for PERSONAL/licensed `.ania` files (web-incompatible)
+A PERSONAL (licensed) export decrypts fine in the browser but keeps **every frame
+AES-encrypted**: only the desktop AniaPlayer can unlock them, by fetching the
+per-file decrypt key from the license server with a hardware id + client IP. The
+browser has neither, so the player bundle failed on each frame and looped
+`Erro ao renderizar frame N: Error: Erro ao carregar frame N` forever over a
+blank canvas, with nothing pointing at the real cause. Same file opens normally
+on desktop, so the password looked like the suspect — it never was.
+
+- New `inspectAvatarFrames(avatarData)` (exported) checks the first frame for an
+  image signature (WEBP/PNG/JPEG/GIF) and reports
+  `{ playable, reason, licenseType, frameCount, frameFormat }`.
+- `<AniaAvatar>` runs it before creating the player and throws **once** with
+  `avatar.error.encryptedFrames` — naming the license type and telling the host
+  to use a MARKETPLACE export. Shown in the widget's error state and via
+  `onError`; also logged with the URL, license type and frame count.
+- The offending file is evicted from the IndexedDB avatar cache, so re-uploading
+  a MARKETPLACE file at the same URL takes effect on the next load.
+- New `avatar.error.noFrames` for a file whose `video.frames` is empty.
+- README: new "Avatar file types" section with the export-type matrix.
+
 ## [1.11.4]
 
 ### Fixed — `AvatarChatbot` now live-updates `idleSpeed`/`talkSpeed` props

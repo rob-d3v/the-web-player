@@ -70,6 +70,11 @@ export { executeCommand, parseCommandLine, installPostMessageControl, COMMAND_LI
 // so hosts can drive / test the flow logic headlessly (no React, no TTS).
 export { flowReducer, initialState as flowInitialState, getNode as flowGetNode, resolvePrompt as flowResolvePrompt, visibleOptions as flowVisibleOptions, nodeInput as flowNodeInput, validateInput as flowValidateInput, interpolate as flowInterpolate } from './hooks/flow-reducer.js';
 
+// Compatibilidade do arquivo .ania — só avatares MARKETPLACE tocam no browser.
+// `inspectAvatarFrames` deixa o host checar isso ANTES de montar o widget
+// (ex.: validar um upload no painel), com o mesmo teste que <AniaAvatar> aplica.
+export { inspectAvatarFrames, isPlainMarketAnia, decryptAniaFile } from './utils/crypto.js';
+
 // Utilitarios de cache
 export {
   getCachedAvatar,

@@ -172,6 +172,13 @@ export const AvatarChatbot = ({
   // false = lazy: the model is fetched only when the user first opens the
   // chat, keeping it off the page-load critical path.
   piperPreload = false,
+  // ---- Robs Voice TTS (on-device neural pt-BR, beta) ----
+  // Base dir holding acoustic.onnx + vocoder.onnx + robsvoice.json, OR set the
+  // three explicit urls below. Active when ttsProvider="robsvoice".
+  robsVoiceUrl = null,
+  robsAcousticUrl = null,
+  robsVocoderUrl = null,
+  robsManifestUrl = null,
   // ---- Plugin architecture ----
   // Consumer-supplied custom plugins (custom TTS/STT/action/integration). The
   // library built-ins are always registered; these are added on top and can
@@ -385,7 +392,11 @@ export const AvatarChatbot = ({
       piperModelUrl,
       piperModelConfigUrl,
       piperPitch,
-      piperSpeed
+      piperSpeed,
+      robsVoiceUrl,
+      robsAcousticUrl,
+      robsVocoderUrl,
+      robsManifestUrl
     }
   });
 

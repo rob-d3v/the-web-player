@@ -1,6 +1,6 @@
 # ania-avatar-react
 
-React library for animated avatars with TTS (6 providers including browser-side Piper ONNX), STT, lip sync, action frames, chatbot/LLM integration, and file attachments.
+React library for animated avatars with TTS (7 providers including browser-side Piper ONNX and the on-device neural pt-BR Robs Voice beta), STT, lip sync, action frames, chatbot/LLM integration, and file attachments.
 
 ## Installation
 
@@ -46,6 +46,58 @@ import { AvatarChatbot } from 'ania-avatar-react';
 
 ---
 
+## Avatar file types — only MARKETPLACE plays in the browser
+
+> **Not every `.ania` works on the web.** This is the single most common
+> integration failure, and the password is never the cause.
+
+| Export type | Header | Password | Frames | Web player |
+|-------------|--------|----------|--------|------------|
+| **MARKETPLACE** | `ANIA3.0`, zeroed HMAC/salt/IV | none | plain base64 WEBP | ✅ works |
+| **Password-exported** (no license block) | `ANIA1.0` / `ANIA2.0` | required | plain base64 WEBP after decrypt | ✅ works |
+| **PERSONAL / licensed export** | `ANIA1.0` + `license.type: "PERSONAL"` | required | **AES-encrypted, per frame** | ❌ desktop only |
+
+A PERSONAL export decrypts fine in the browser — the JSON, the animation ranges
+and the frame count all come out right — but every frame is still ciphertext.
+Only the **desktop AniaPlayer** can unlock them: it calls the license server with
+a **hardware id + client IP** to fetch the per-file decrypt key. A browser has
+neither, so the key never arrives.
+
+**Symptom if you ship one anyway** (older versions of this library): a blank
+canvas plus an endless console loop from the player bundle, one line per frame,
+on every animation tick:
+
+```
+aniaplayer.min.js: Erro ao renderizar frame 171: Error: Erro ao carregar frame 171
+aniaplayer.min.js: Erro ao renderizar frame 172: Error: Erro ao carregar frame 172
+...
+```
+
+Since **1.11.5** the library detects this before the player starts and fails once
+with an explicit message (`avatar.error.encryptedFrames`) instead — surfaced in
+the widget's error state and via `onError`. The cached copy of the bad file is
+dropped too, so re-uploading a MARKETPLACE file at the same URL takes effect
+immediately.
+
+**Fix:** re-export the avatar as **MARKETPLACE** in the Ania studio/desktop app
+and point `avatarUrl` at that file (no `avatarPassword` needed). There is no
+client-side workaround — the key does not exist in the browser.
+
+Check a file yourself before mounting the widget:
+
+```jsx
+import { decryptAniaFile, inspectAvatarFrames } from 'ania-avatar-react';
+
+const buf = await (await fetch(url)).arrayBuffer();
+const data = await decryptAniaFile(buf, password ?? '');
+const info = inspectAvatarFrames(data);
+// { playable: false, reason: 'encrypted-frames', licenseType: 'PERSONAL',
+//   frameCount: 537, frameFormat: null }
+if (!info.playable) throw new Error('Use a MARKETPLACE export');
+```
+
+---
+
 ## Components
 
 ### `<AvatarChatbot />`
@@ -56,7 +108,7 @@ Full chatbot with avatar, TTS, STT, file uploads, and webhook integration.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `avatarUrl` | `string` | - | URL to `.ania` or `.json` avatar file |
+| `avatarUrl` | `string` | - | URL to `.ania` or `.json` avatar file. Must be a **MARKETPLACE** export — see [Avatar file types](#avatar-file-types--only-marketplace-plays-in-the-browser) |
 | `avatarPassword` | `string` | - | Password for encrypted `.ania` files |
 | `avatarData` | `object` | - | Direct avatar data (alternative to URL) |
 | `authToken` | `string` | - | Bearer token for avatar URL fetch |
@@ -100,7 +152,7 @@ Full chatbot with avatar, TTS, STT, file uploads, and webhook integration.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `enableTTS` | `boolean` | `true` | Enable text-to-speech |
-| `ttsProvider` | `'browser'` \| `'tiktok'` \| `'elevenlabs'` \| `'google'` \| `'azure'` \| `'piper'` | `'browser'` | TTS provider |
+| `ttsProvider` | `'browser'` \| `'tiktok'` \| `'elevenlabs'` \| `'google'` \| `'azure'` \| `'piper'` \| `'robsvoice'` | `'browser'` | TTS provider |
 | `ttsVoice` | `string` | `'auto'` | Voice name (browser TTS) |
 | `ttsVoiceId` | `string` | - | Voice ID (cloud providers) |
 | `ttsGender` | `'auto'` \| `'male'` \| `'female'` | `'auto'` | Preferred voice gender |
@@ -136,6 +188,38 @@ Full chatbot with avatar, TTS, STT, file uploads, and webhook integration.
 | `piperModelConfigUrl` | `string` | - | URL to model config JSON |
 | `piperPitch` | `number` | `1` | Pitch (0.75-1.3) |
 | `piperSpeed` | `number` | `1` | Speed (0.75-1.3) |
+
+#### Robs Voice TTS Props (beta)
+
+Robs Voice is an **on-device neural pt-BR voice** (BETA): two ONNX graphs
+(Matcha acoustic + Vocos vocoder) driven by a rule-based, deterministic pt-BR
+text frontend that runs entirely in the browser (no key, no network after the
+model download). The voice artifact is self-describing — a `robsvoice.json`
+manifest carries the audio params and the inline phoneme→id map, so the runtime
+never derives the map (byte-parity with training, `MAP_VERSION = 1`).
+
+Set `ttsProvider="robsvoice"` and point it at a voice artifact — either a base
+directory (holding `acoustic.onnx`, `vocoder.onnx`, `robsvoice.json`) or the
+three explicit URLs:
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `robsVoiceUrl` | `string` | - | Base dir with `acoustic.onnx` + `vocoder.onnx` + `robsvoice.json` |
+| `robsAcousticUrl` | `string` | - | Explicit acoustic model URL (alternative to `robsVoiceUrl`) |
+| `robsVocoderUrl` | `string` | - | Explicit vocoder model URL |
+| `robsManifestUrl` | `string` | - | Explicit `robsvoice.json` manifest URL |
+
+```jsx
+<AvatarChatbot
+  enableTTS
+  ttsProvider="robsvoice"
+  robsVoiceUrl="https://cdn.example.com/voices/blueheart"
+/>
+```
+
+Also available as the built-in plugin `tts-robsvoice` (config keys
+`robsVoiceUrl` / `robsAcousticUrl` / `robsVocoderUrl` / `robsManifestUrl`).
+onnxruntime-web is loaded lazily on first synthesis and results are LRU-cached.
 
 #### Lip Sync Props
 
@@ -559,7 +643,7 @@ A `Plugin` is a plain object mirroring the desktop `PluginBase`:
 ```
 
 The built-in providers (`tts-browser`, `tts-tiktok`, `tts-elevenlabs`,
-`tts-google`, `tts-azure`, `tts-piper`, `stt-browser`, `stt-google`,
+`tts-google`, `tts-azure`, `tts-piper`, `tts-robsvoice`, `stt-browser`, `stt-google`,
 `action-audio`) are registered automatically; custom plugins are layered on
 top and can override a built-in by reusing its id.
 

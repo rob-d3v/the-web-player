@@ -1,0 +1,84 @@
+{
+  "schema": "robs-tts.golden_vectors.normalize/2",
+  "note": "Vetores de paridade do frontend pt-BR (P1a). text -> expected = saida canonica de normalize_ptbr (todas as flags default: True). Trava a NORMALIZACAO por REGRAS. Cada 'expected' foi verificado como pt-BR correto. NAO edite 'expected' sem registrar o porque em wiki/wiki/concepts/frontend-texto-ptbr.md. Os 5 primeiros ids (numeros_0_999, moeda, data, hora, abreviacao) sao os semente originais do P0.",
+  "cases": [
+    {"id": "numeros_0_999", "cat": "numeros", "text": "eu tenho 3 e 247", "expected": "eu tenho três e duzentos e quarenta e sete"},
+    {"id": "moeda", "cat": "moeda", "text": "custa R$ 12,50", "expected": "custa doze reais e cinquenta centavos"},
+    {"id": "data", "cat": "data", "text": "nasci em 12/03/2026", "expected": "nasci em doze de março de dois mil e vinte e seis"},
+    {"id": "hora", "cat": "hora", "text": "o show é às 14h30", "expected": "o show é às quatorze horas e trinta minutos"},
+    {"id": "abreviacao", "cat": "abrev", "text": "o Dr. Silva chegou", "expected": "o doutor silva chegou"},
+
+    {"id": "num_zero", "cat": "numeros", "text": "resta 0", "expected": "resta zero"},
+    {"id": "num_cem", "cat": "numeros", "text": "tenho 100 balas", "expected": "tenho cem balas"},
+    {"id": "num_cento", "cat": "numeros", "text": "são 101 dias", "expected": "são cento e um dias"},
+    {"id": "num_mil", "cat": "numeros", "text": "1000 e 2000", "expected": "mil e dois mil"},
+    {"id": "num_1234", "cat": "numeros", "text": "o ano 1234", "expected": "o ano mil duzentos e trinta e quatro"},
+    {"id": "num_milhar_sep", "cat": "numeros", "text": "vi 1.234 pessoas", "expected": "vi mil duzentos e trinta e quatro pessoas"},
+    {"id": "num_milhao", "cat": "numeros", "text": "tenho 1000000 de ideias", "expected": "tenho um milhão de ideias"},
+    {"id": "num_dois_milhoes", "cat": "numeros", "text": "população de 2000000", "expected": "população de dois milhões"},
+    {"id": "num_bilhao", "cat": "numeros", "text": "1500000000 no total", "expected": "um bilhão e quinhentos milhões no total"},
+    {"id": "num_trilhao", "cat": "numeros", "text": "custou 1000000000000", "expected": "custou um trilhão"},
+    {"id": "num_milhar_pontos", "cat": "numeros", "text": "1.000.000 de reais", "expected": "um milhão de reais"},
+
+    {"id": "moeda_um_real", "cat": "moeda", "text": "só R$ 1,00", "expected": "só um real"},
+    {"id": "moeda_grande", "cat": "moeda", "text": "total de R$ 1.234,56", "expected": "total de mil duzentos e trinta e quatro reais e cinquenta e seis centavos"},
+    {"id": "moeda_um_centavo", "cat": "moeda", "text": "R$ 0,01", "expected": "zero reais e um centavo"},
+    {"id": "moeda_vinte_um", "cat": "moeda", "text": "paguei R$ 21,00", "expected": "paguei vinte e um reais"},
+    {"id": "moeda_duzentos", "cat": "moeda", "text": "R$ 234,00", "expected": "duzentos e trinta e quatro reais"},
+
+    {"id": "data_dia_mes", "cat": "data", "text": "no dia 05/01/2000", "expected": "no dia cinco de janeiro de dois mil"},
+    {"id": "data_dez", "cat": "data", "text": "foi 25/12/1999", "expected": "foi vinte e cinco de dezembro de mil novecentos e noventa e nove"},
+
+    {"id": "hora_colon", "cat": "hora", "text": "às 09:05", "expected": "às nove horas e cinco minutos"},
+    {"id": "hora_uma", "cat": "hora", "text": "à 1h", "expected": "à uma hora"},
+    {"id": "hora_duas", "cat": "hora", "text": "são 2h", "expected": "são duas horas"},
+    {"id": "hora_vinte_uma", "cat": "hora", "text": "chega 21h", "expected": "chega vinte e uma horas"},
+    {"id": "hora_meio", "cat": "hora", "text": "às 12h", "expected": "às doze horas"},
+
+    {"id": "percent_int", "cat": "percent", "text": "desconto de 50%", "expected": "desconto de cinquenta por cento"},
+    {"id": "percent_dec", "cat": "percent", "text": "taxa de 2,5%", "expected": "taxa de dois vírgula cinco por cento"},
+    {"id": "percent_cem", "cat": "percent", "text": "100% certo", "expected": "cem por cento certo"},
+
+    {"id": "decimal_simples", "cat": "decimal", "text": "pesa 2,5 no total", "expected": "pesa dois vírgula cinco no total"},
+    {"id": "decimal_pi", "cat": "decimal", "text": "vale 3,14", "expected": "vale três vírgula quatorze"},
+    {"id": "decimal_zero", "cat": "decimal", "text": "marca 2,05", "expected": "marca dois vírgula zero cinco"},
+
+    {"id": "unidade_km", "cat": "unidade", "text": "corri 5 km", "expected": "corri cinco quilômetros"},
+    {"id": "unidade_km_um", "cat": "unidade", "text": "falta 1 km", "expected": "falta um quilômetro"},
+    {"id": "unidade_kg_dec", "cat": "unidade", "text": "pesa 2,5 kg", "expected": "pesa dois vírgula cinco quilos"},
+    {"id": "unidade_temp", "cat": "unidade", "text": "faz 30°C hoje", "expected": "faz trinta graus celsius hoje"},
+    {"id": "unidade_metro", "cat": "unidade", "text": "tem 3 m de altura", "expected": "tem três metros de altura"},
+
+    {"id": "ordinal_masc", "cat": "ordinal", "text": "o 1º lugar", "expected": "o primeiro lugar"},
+    {"id": "ordinal_fem", "cat": "ordinal", "text": "a 3ª vez", "expected": "a terceira vez"},
+    {"id": "ordinal_composto", "cat": "ordinal", "text": "o 21º andar", "expected": "o vigésimo primeiro andar"},
+    {"id": "ordinal_grau", "cat": "ordinal", "text": "o 2º tempo", "expected": "o segundo tempo"},
+
+    {"id": "telefone_cel", "cat": "telefone", "text": "ligue (11) 98765-4321", "expected": "ligue um um nove oito sete seis cinco quatro três dois um"},
+    {"id": "telefone_0800", "cat": "telefone", "text": "central 0800 123 4567", "expected": "central zero oito zero zero um dois três quatro cinco seis sete"},
+    {"id": "telefone_fixo", "cat": "telefone", "text": "no 3255-8000", "expected": "no três dois cinco cinco oito zero zero zero"},
+
+    {"id": "abrev_dra", "cat": "abrev", "text": "a Dra. Ana chegou", "expected": "a doutora ana chegou"},
+    {"id": "abrev_sra", "cat": "abrev", "text": "a Sra. Costa", "expected": "a senhora costa"},
+    {"id": "abrev_prof", "cat": "abrev", "text": "o Prof. João", "expected": "o professor joão"},
+    {"id": "abrev_av", "cat": "abrev", "text": "na Av. Paulista", "expected": "na avenida paulista"},
+    {"id": "abrev_pag", "cat": "abrev", "text": "veja a pág. 10", "expected": "veja a página dez"},
+
+    {"id": "sigla_inss", "cat": "sigla", "text": "o INSS pagou", "expected": "o i ene esse esse pagou"},
+    {"id": "sigla_cpf", "cat": "sigla", "text": "meu CPF novo", "expected": "meu cê pê efe novo"},
+    {"id": "sigla_rg", "cat": "sigla", "text": "levei o RG", "expected": "levei o erre gê"},
+    {"id": "sigla_acronimo", "cat": "sigla", "text": "estudou na USP", "expected": "estudou na usp"},
+
+    {"id": "romano_seculo", "cat": "romano", "text": "no século XIX houve", "expected": "no século dezenove houve"},
+    {"id": "romano_capitulo", "cat": "romano", "text": "o capítulo IV começa", "expected": "o capítulo quatro começa"},
+    {"id": "romano_volume", "cat": "romano", "text": "o volume VII", "expected": "o volume sete"},
+
+    {"id": "email_spell", "cat": "url", "text": "escreva para contato@exemplo.com", "expected": "escreva para contato arroba exemplo ponto com"},
+    {"id": "url_spell", "cat": "url", "text": "veja https://ania.shop/docs", "expected": "veja ania ponto shop barra docs"},
+
+    {"id": "emoji_strip", "cat": "emoji", "text": "que legal 😀 demais 🎉", "expected": "que legal demais"},
+
+    {"id": "misto_frase", "cat": "misto", "text": "O Dr. Silva chegou às 14h30 com R$ 50,00 e 3 livros.", "expected": "o doutor silva chegou às quatorze horas e trinta minutos com cinquenta reais e três livros."},
+    {"id": "misto_data_hora", "cat": "misto", "text": "reunião em 01/02/2026 às 09:05", "expected": "reunião em primeiro de fevereiro de dois mil e vinte e seis às nove horas e cinco minutos"}
+  ]
+}

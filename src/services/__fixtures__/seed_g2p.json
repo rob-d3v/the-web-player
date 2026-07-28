@@ -1,0 +1,775 @@
+{
+ "schema": "robs-tts.golden_vectors.g2p/1",
+ "map_version": 1,
+ "note": "Vetores de paridade do G2P pt-BR (backend rules, P1a). text -> phonemes (inventario MAP_VERSION=1) -> ids (build_ptbr_vocab().encode, com BOS/EOS). Congela o CONTRATO fonemico. Regenerar SO com registro em wiki. Cada saida foi auditada como pt-BR plausivel; limites (aberto/fechado sem acento, x, hiatos) documentados em wiki/wiki/concepts/frontend-texto-ptbr.md.",
+ "cases": [
+  {
+   "id": "g_reduz_o",
+   "text": "gato",
+   "phonemes": [
+    "g",
+    "ˈ",
+    "a",
+    "t",
+    "u"
+   ],
+   "ids": [
+    1,
+    30,
+    7,
+    9,
+    27,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "nasal_palatal",
+   "text": "dente",
+   "phonemes": [
+    "d",
+    "ˈ",
+    "ẽ",
+    "tʃ",
+    "i"
+   ],
+   "ids": [
+    1,
+    28,
+    7,
+    17,
+    31,
+    12,
+    2
+   ]
+  },
+  {
+   "id": "di_dʒ",
+   "text": "dia",
+   "phonemes": [
+    "dʒ",
+    "ˈ",
+    "i",
+    "a"
+   ],
+   "ids": [
+    1,
+    32,
+    7,
+    12,
+    9,
+    2
+   ]
+  },
+  {
+   "id": "ti_tʃ",
+   "text": "tia",
+   "phonemes": [
+    "tʃ",
+    "ˈ",
+    "i",
+    "a"
+   ],
+   "ids": [
+    1,
+    31,
+    7,
+    12,
+    9,
+    2
+   ]
+  },
+  {
+   "id": "s_intervoc_z",
+   "text": "casa",
+   "phonemes": [
+    "k",
+    "ˈ",
+    "a",
+    "z",
+    "a"
+   ],
+   "ids": [
+    1,
+    29,
+    7,
+    9,
+    36,
+    9,
+    2
+   ]
+  },
+  {
+   "id": "rr_forte",
+   "text": "carro",
+   "phonemes": [
+    "k",
+    "ˈ",
+    "a",
+    "ʁ",
+    "u"
+   ],
+   "ids": [
+    1,
+    29,
+    7,
+    9,
+    39,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "r_inicial_forte",
+   "text": "rato",
+   "phonemes": [
+    "ʁ",
+    "ˈ",
+    "a",
+    "t",
+    "u"
+   ],
+   "ids": [
+    1,
+    39,
+    7,
+    9,
+    27,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "br_tap_coda_l",
+   "text": "brasil",
+   "phonemes": [
+    "b",
+    "ɾ",
+    "a",
+    "z",
+    "ˈ",
+    "i",
+    "w"
+   ],
+   "ids": [
+    1,
+    26,
+    40,
+    9,
+    36,
+    7,
+    12,
+    22,
+    2
+   ]
+  },
+  {
+   "id": "coda_l_w",
+   "text": "alto",
+   "phonemes": [
+    "ˈ",
+    "a",
+    "w",
+    "t",
+    "u"
+   ],
+   "ids": [
+    1,
+    7,
+    9,
+    22,
+    27,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "ditongo_ao",
+   "text": "pão",
+   "phonemes": [
+    "p",
+    "ˈ",
+    "ã",
+    "w̃"
+   ],
+   "ids": [
+    1,
+    25,
+    7,
+    16,
+    24,
+    2
+   ]
+  },
+  {
+   "id": "ditongo_ae",
+   "text": "mãe",
+   "phonemes": [
+    "m",
+    "ˈ",
+    "ã",
+    "j̃"
+   ],
+   "ids": [
+    1,
+    41,
+    7,
+    16,
+    23,
+    2
+   ]
+  },
+  {
+   "id": "cedilha_ao",
+   "text": "coração",
+   "phonemes": [
+    "k",
+    "o",
+    "ɾ",
+    "a",
+    "s",
+    "ˈ",
+    "ã",
+    "w̃"
+   ],
+   "ids": [
+    1,
+    29,
+    14,
+    40,
+    9,
+    35,
+    7,
+    16,
+    24,
+    2
+   ]
+  },
+  {
+   "id": "lh",
+   "text": "filho",
+   "phonemes": [
+    "f",
+    "ˈ",
+    "i",
+    "ʎ",
+    "u"
+   ],
+   "ids": [
+    1,
+    33,
+    7,
+    12,
+    45,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "qu_mudo",
+   "text": "quero",
+   "phonemes": [
+    "k",
+    "ˈ",
+    "e",
+    "ɾ",
+    "u"
+   ],
+   "ids": [
+    1,
+    29,
+    7,
+    11,
+    40,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "gu_mudo_rr",
+   "text": "guerra",
+   "phonemes": [
+    "g",
+    "ˈ",
+    "e",
+    "ʁ",
+    "a"
+   ],
+   "ids": [
+    1,
+    30,
+    7,
+    11,
+    39,
+    9,
+    2
+   ]
+  },
+  {
+   "id": "sc_s",
+   "text": "nascer",
+   "phonemes": [
+    "n",
+    "a",
+    "s",
+    "ˈ",
+    "e",
+    "ʁ"
+   ],
+   "ids": [
+    1,
+    42,
+    9,
+    35,
+    7,
+    11,
+    39,
+    2
+   ]
+  },
+  {
+   "id": "heteronimo_muito",
+   "text": "muito",
+   "phonemes": [
+    "m",
+    "ˈ",
+    "ũ",
+    "j̃",
+    "t",
+    "u"
+   ],
+   "ids": [
+    1,
+    41,
+    7,
+    20,
+    23,
+    27,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "e_fechado",
+   "text": "você",
+   "phonemes": [
+    "v",
+    "o",
+    "s",
+    "ˈ",
+    "e"
+   ],
+   "ids": [
+    1,
+    34,
+    14,
+    35,
+    7,
+    11,
+    2
+   ]
+  },
+  {
+   "id": "em_ditongo_nasal",
+   "text": "também",
+   "phonemes": [
+    "t",
+    "ã",
+    "b",
+    "ˈ",
+    "ẽ",
+    "j̃"
+   ],
+   "ids": [
+    1,
+    27,
+    16,
+    26,
+    7,
+    17,
+    23,
+    2
+   ]
+  },
+  {
+   "id": "z_final",
+   "text": "feliz",
+   "phonemes": [
+    "f",
+    "e",
+    "l",
+    "ˈ",
+    "i",
+    "z"
+   ],
+   "ids": [
+    1,
+    33,
+    11,
+    44,
+    7,
+    12,
+    36,
+    2
+   ]
+  },
+  {
+   "id": "coda_l_final",
+   "text": "papel",
+   "phonemes": [
+    "p",
+    "a",
+    "p",
+    "ˈ",
+    "e",
+    "w"
+   ],
+   "ids": [
+    1,
+    25,
+    9,
+    25,
+    7,
+    11,
+    22,
+    2
+   ]
+  },
+  {
+   "id": "coda_r",
+   "text": "amor",
+   "phonemes": [
+    "a",
+    "m",
+    "ˈ",
+    "o",
+    "ʁ"
+   ],
+   "ids": [
+    1,
+    9,
+    41,
+    7,
+    14,
+    39,
+    2
+   ]
+  },
+  {
+   "id": "heteronimo_o_fechado",
+   "text": "gosto",
+   "phonemes": [
+    "g",
+    "ˈ",
+    "o",
+    "s",
+    "t",
+    "u"
+   ],
+   "ids": [
+    1,
+    30,
+    7,
+    14,
+    35,
+    27,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "h_mudo_j",
+   "text": "hoje",
+   "phonemes": [
+    "ˈ",
+    "o",
+    "ʒ",
+    "i"
+   ],
+   "ids": [
+    1,
+    7,
+    14,
+    38,
+    12,
+    2
+   ]
+  },
+  {
+   "id": "heteronimo_x_z",
+   "text": "exame",
+   "phonemes": [
+    "e",
+    "z",
+    "ˈ",
+    "ã",
+    "m",
+    "i"
+   ],
+   "ids": [
+    1,
+    11,
+    36,
+    7,
+    16,
+    41,
+    12,
+    2
+   ]
+  },
+  {
+   "id": "de_palatal",
+   "text": "cidade",
+   "phonemes": [
+    "s",
+    "i",
+    "d",
+    "ˈ",
+    "a",
+    "dʒ",
+    "i"
+   ],
+   "ids": [
+    1,
+    35,
+    12,
+    28,
+    7,
+    9,
+    32,
+    12,
+    2
+   ]
+  },
+  {
+   "id": "tr_tap_lh",
+   "text": "trabalho",
+   "phonemes": [
+    "t",
+    "ɾ",
+    "a",
+    "b",
+    "ˈ",
+    "a",
+    "ʎ",
+    "u"
+   ],
+   "ids": [
+    1,
+    27,
+    40,
+    9,
+    26,
+    7,
+    9,
+    45,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "h_mudo_o_aberto",
+   "text": "história",
+   "phonemes": [
+    "i",
+    "s",
+    "t",
+    "ˈ",
+    "ɔ",
+    "ɾ",
+    "i",
+    "a"
+   ],
+   "ids": [
+    1,
+    12,
+    35,
+    27,
+    7,
+    13,
+    40,
+    12,
+    9,
+    2
+   ]
+  },
+  {
+   "id": "br_tap",
+   "text": "obrigado",
+   "phonemes": [
+    "o",
+    "b",
+    "ɾ",
+    "i",
+    "g",
+    "ˈ",
+    "a",
+    "d",
+    "u"
+   ],
+   "ids": [
+    1,
+    14,
+    26,
+    40,
+    12,
+    30,
+    7,
+    9,
+    28,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "ditongo_ei",
+   "text": "janeiro",
+   "phonemes": [
+    "ʒ",
+    "a",
+    "n",
+    "ˈ",
+    "e",
+    "j",
+    "ɾ",
+    "u"
+   ],
+   "ids": [
+    1,
+    38,
+    9,
+    42,
+    7,
+    11,
+    21,
+    40,
+    15,
+    2
+   ]
+  },
+  {
+   "id": "frase_pausa_maior",
+   "text": "bom dia!",
+   "phonemes": [
+    "b",
+    "ˈ",
+    "õ",
+    " ",
+    "dʒ",
+    "ˈ",
+    "i",
+    "a",
+    "‖"
+   ],
+   "ids": [
+    1,
+    26,
+    7,
+    19,
+    4,
+    32,
+    7,
+    12,
+    9,
+    6,
+    2
+   ]
+  },
+  {
+   "id": "frase_pausa_menor_maior",
+   "text": "olá, tudo bem?",
+   "phonemes": [
+    "o",
+    "l",
+    "ˈ",
+    "a",
+    "|",
+    "t",
+    "ˈ",
+    "u",
+    "d",
+    "u",
+    " ",
+    "b",
+    "ˈ",
+    "ẽ",
+    "j̃",
+    "‖"
+   ],
+   "ids": [
+    1,
+    14,
+    44,
+    7,
+    9,
+    5,
+    27,
+    7,
+    15,
+    28,
+    15,
+    4,
+    26,
+    7,
+    17,
+    23,
+    6,
+    2
+   ]
+  },
+  {
+   "id": "frase_completa",
+   "text": "o gato preto corre.",
+   "phonemes": [
+    "ˈ",
+    "o",
+    " ",
+    "g",
+    "ˈ",
+    "a",
+    "t",
+    "u",
+    " ",
+    "p",
+    "ɾ",
+    "ˈ",
+    "e",
+    "t",
+    "u",
+    " ",
+    "k",
+    "ˈ",
+    "o",
+    "ʁ",
+    "i",
+    "‖"
+   ],
+   "ids": [
+    1,
+    7,
+    14,
+    4,
+    30,
+    7,
+    9,
+    27,
+    15,
+    4,
+    25,
+    40,
+    7,
+    11,
+    27,
+    15,
+    4,
+    29,
+    7,
+    14,
+    39,
+    12,
+    6,
+    2
+   ]
+  }
+ ]
+}

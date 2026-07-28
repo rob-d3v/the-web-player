@@ -130,6 +130,23 @@ export const professionalTTSRequest = async (text, provider, config) => {
       });
       return { audioUrl, duration: 0 };
 
+    } else if (provider === "robsvoice") {
+      // Robs Voice — on-device neural pt-BR voice (Matcha + Vocos ONNX). The
+      // voice artifact (acoustic.onnx + vocoder.onnx + robsvoice.json) is
+      // self-describing; supply a base dir via robsVoiceUrl or the three
+      // explicit urls.
+      const { initRobs, robsSynthesize } = await import('./robs-tts.js');
+      const voiceArg = config.robsVoiceUrl != null
+        ? config.robsVoiceUrl
+        : { acousticUrl: config.robsAcousticUrl, vocoderUrl: config.robsVocoderUrl, manifestUrl: config.robsManifestUrl };
+      const hasVoice = Boolean(config.robsVoiceUrl
+        || (config.robsAcousticUrl && config.robsVocoderUrl && config.robsManifestUrl));
+      if (hasVoice) {
+        await initRobs(voiceArg, { onProgress: config.onRobsProgress });
+      }
+      const { audioUrl } = await robsSynthesize(text);
+      return { audioUrl, duration: 0 };
+
     } else if (provider === "azure") {
       const region = config.ttsRegion || 'brazilsouth';
       const apiUrl = config.ttsApiUrl || `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;

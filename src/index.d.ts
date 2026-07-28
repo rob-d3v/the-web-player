@@ -119,7 +119,7 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   ttsRate?: number;
   ttsPitch?: number;
   ttsLang?: string;
-  ttsProvider?: 'browser' | 'tiktok' | 'elevenlabs' | 'google' | 'azure' | 'piper';
+  ttsProvider?: 'browser' | 'tiktok' | 'elevenlabs' | 'google' | 'azure' | 'piper' | 'robsvoice';
   ttsApiKey?: string;
   ttsApiUrl?: string;
   ttsVoiceId?: string;
@@ -145,6 +145,15 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   piperSpeakerId?: number;
   /** Eager-load the Piper model at mount (default false = lazy on first chat-open). */
   piperPreload?: boolean;
+  // Robs Voice TTS (on-device neural pt-BR, beta) — active when ttsProvider="robsvoice".
+  /** Base dir holding acoustic.onnx + vocoder.onnx + robsvoice.json. */
+  robsVoiceUrl?: string;
+  /** Explicit acoustic.onnx url (alternative to robsVoiceUrl). */
+  robsAcousticUrl?: string;
+  /** Explicit vocoder.onnx url (alternative to robsVoiceUrl). */
+  robsVocoderUrl?: string;
+  /** Explicit robsvoice.json manifest url (alternative to robsVoiceUrl). */
+  robsManifestUrl?: string;
   // Speech-to-Text options
   enableSTT?: boolean;
   sttProvider?: 'browser' | 'google';
@@ -786,6 +795,26 @@ export function buildOpennessMap(keyframes: [number, number][], talkLow: number,
 export function parseHotkey(hotkeyString: string): { ctrl: boolean; alt: boolean; shift: boolean; meta: boolean; key: string } | null;
 export function matchesHotkey(event: KeyboardEvent, parsed: ReturnType<typeof parseHotkey>): boolean;
 export function playActionAudio(audioBase64: string, delayMs?: number): { cancel: () => void } | null;
+
+// ===== .ania File Compatibility =====
+
+/**
+ * Result of `inspectAvatarFrames`. `playable: false` means the file cannot run
+ * in a browser — a PERSONAL/licensed export keeps its frames AES-encrypted and
+ * only the desktop AniaPlayer can decrypt them (it fetches the key from the
+ * license server with a hardware id). Re-export the avatar as MARKETPLACE.
+ */
+export interface AvatarFramesInfo {
+  playable: boolean;
+  reason: 'encrypted-frames' | 'no-frames' | null;
+  licenseType: string | null;
+  frameCount: number;
+  frameFormat: 'webp' | 'png' | 'jpeg' | 'gif' | null;
+}
+
+export function inspectAvatarFrames(avatarData: any): AvatarFramesInfo;
+export function isPlainMarketAnia(data: ArrayBuffer | Uint8Array): boolean;
+export function decryptAniaFile(encryptedData: ArrayBuffer, password: string): Promise<any>;
 
 // ===== Cache Exports =====
 

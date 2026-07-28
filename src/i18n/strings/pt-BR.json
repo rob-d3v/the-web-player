@@ -24,6 +24,8 @@
   "avatar.error.playerNotLoaded": "AniaPlayer não foi carregado",
   "avatar.error.passwordRequired": "Senha necessária para arquivo .ania criptografado",
   "avatar.error.noSource": "Nenhuma fonte de avatar fornecida (avatarUrl ou avatarData)",
+  "avatar.error.encryptedFrames": "Avatar incompatível com a web: este .ania é do tipo {{type}} (exportado com licença) e tem os frames criptografados — só abre no AniaPlayer desktop, que busca a chave no servidor de licença usando o id de hardware. Use um avatar exportado como MARKETPLACE.",
+  "avatar.error.noFrames": "Arquivo de avatar sem frames de vídeo",
   "greetings": {
     "0": "Olá! Como posso te ajudar hoje?",
     "1": "Oi! Boas-vindas! O que posso fazer por você?",

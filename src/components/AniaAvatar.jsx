@@ -4,9 +4,9 @@ import { createPortal } from 'react-dom';
 import { Maximize2, Minimize2, X } from 'lucide-react';
 import { THEMES } from '../constants/themes.js';
 import { createTranslator } from '../i18n/index.js';
-import { decryptAniaFile, isPlainMarketAnia } from '../utils/crypto.js';
+import { decryptAniaFile, isPlainMarketAnia, inspectAvatarFrames } from '../utils/crypto.js';
 import { calculateOptimalSpeeds } from '../utils/speed-calculator.js';
-import { getCachedAvatar, setCachedAvatar } from '../utils/avatar-cache.js';
+import { getCachedAvatar, setCachedAvatar, deleteCachedAvatar } from '../utils/avatar-cache.js';
 import { fetchLipSyncConfig, buildOpennessMap } from '../services/lip-sync-api.js';
 
 // forwardRef: useAniaAvatarRef expects `ref.current.playerRef` — without the
@@ -436,6 +436,32 @@ export const AniaAvatar = forwardRef(({
         } else {
           throw new Error(tr.t("avatar.error.noSource"));
         }
+
+        // Only MARKETPLACE files play in a browser. A PERSONAL/licensed export
+        // keeps its frames AES-encrypted and needs the DESKTOP AniaPlayer (which
+        // fetches the decrypt key from the license server using a hardware id) —
+        // in the web player every frame decode fails and the bundle loops
+        // `Erro ao carregar frame N` forever over a blank canvas. Fail loudly
+        // here instead, and drop the cache entry so re-uploading a MARKETPLACE
+        // file at the same URL isn't shadowed by the bad one.
+        const framesInfo = inspectAvatarFrames(avatarData);
+        if (!framesInfo.playable) {
+          if (avatarUrl) await deleteCachedAvatar(avatarUrl);
+          const message =
+            framesInfo.reason === 'no-frames'
+              ? tr.t("avatar.error.noFrames")
+              : tr.t("avatar.error.encryptedFrames", {
+                  type: framesInfo.licenseType || 'PERSONAL',
+                });
+          console.error(`[AniaAvatar] ${message}`, {
+            avatarUrl,
+            licenseType: framesInfo.licenseType,
+            frameCount: framesInfo.frameCount,
+            reason: framesInfo.reason,
+          });
+          throw new Error(message);
+        }
+
         const detectedFps = (_c = avatarData.video) == null ? void 0 : _c.fps;
 
         // Speed precedence (lowest → highest):

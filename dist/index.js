@@ -3248,6 +3248,8 @@ const en = {
   "avatar.error.playerNotLoaded": "AniaPlayer not loaded",
   "avatar.error.passwordRequired": "Password required for encrypted .ania file",
   "avatar.error.noSource": "No avatar source provided (avatarUrl or avatarData)",
+  "avatar.error.encryptedFrames": "Avatar not usable on the web: this .ania is a {{type}} (licensed export) file and its frames are encrypted — only the desktop AniaPlayer can open it, because it fetches the decrypt key from the license server using a hardware id. Use an avatar exported as MARKETPLACE.",
+  "avatar.error.noFrames": "Avatar file has no video frames",
   greetings: greetings$2e,
   waiting: waiting$2e
 };
@@ -8848,6 +8850,8 @@ const ptBR = {
   "avatar.error.playerNotLoaded": "AniaPlayer não foi carregado",
   "avatar.error.passwordRequired": "Senha necessária para arquivo .ania criptografado",
   "avatar.error.noSource": "Nenhuma fonte de avatar fornecida (avatarUrl ou avatarData)",
+  "avatar.error.encryptedFrames": "Avatar incompatível com a web: este .ania é do tipo {{type}} (exportado com licença) e tem os frames criptografados — só abre no AniaPlayer desktop, que busca a chave no servidor de licença usando o id de hardware. Use um avatar exportado como MARKETPLACE.",
+  "avatar.error.noFrames": "Arquivo de avatar sem frames de vídeo",
   greetings: greetings$O,
   waiting: waiting$O
 };
@@ -12018,6 +12022,47 @@ function isPlainMarketAnia(data) {
     return false;
   }
 }
+const IMAGE_MAGICS = [
+  { name: "webp", test: (b) => ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WEBP" },
+  { name: "png", test: (b) => b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71 },
+  { name: "jpeg", test: (b) => b[0] === 255 && b[1] === 216 && b[2] === 255 },
+  { name: "gif", test: (b) => ascii(b, 0, 4) === "GIF8" }
+];
+function ascii(bytes, start, end) {
+  return String.fromCharCode(...bytes.slice(start, end));
+}
+function headBytes(base64Frame) {
+  const raw = String(base64Frame).replace(/^data:[^,]*,/, "");
+  const head = raw.slice(0, 24);
+  const bin = typeof atob === "function" ? atob(head) : Buffer.from(head, "base64").toString("latin1");
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function inspectAvatarFrames(avatarData) {
+  var _a, _b;
+  const licenseType = ((_a = avatarData == null ? void 0 : avatarData.license) == null ? void 0 : _a.type) || null;
+  const frames = (_b = avatarData == null ? void 0 : avatarData.video) == null ? void 0 : _b.frames;
+  const base = { licenseType, frameCount: Array.isArray(frames) ? frames.length : 0, frameFormat: null };
+  if (!Array.isArray(frames) || frames.length === 0) {
+    return { ...base, playable: false, reason: "no-frames" };
+  }
+  const first = frames.find((f) => typeof f === "string" && f.length > 0);
+  if (!first) {
+    return { ...base, playable: false, reason: "no-frames" };
+  }
+  let head;
+  try {
+    head = headBytes(first);
+  } catch {
+    return { ...base, playable: false, reason: "encrypted-frames" };
+  }
+  const match = IMAGE_MAGICS.find((m) => m.test(head));
+  if (match) {
+    return { ...base, playable: true, reason: null, frameFormat: match.name };
+  }
+  return { ...base, playable: false, reason: "encrypted-frames" };
+}
 async function decryptAniaFile(encryptedData, password) {
   try {
     let bytes = new Uint8Array(encryptedData);
@@ -12693,6 +12738,20 @@ const AniaAvatar = forwardRef(({
         } else {
           throw new Error(tr2.t("avatar.error.noSource"));
         }
+        const framesInfo = inspectAvatarFrames(avatarData);
+        if (!framesInfo.playable) {
+          if (avatarUrl) await deleteCachedAvatar(avatarUrl);
+          const message = framesInfo.reason === "no-frames" ? tr2.t("avatar.error.noFrames") : tr2.t("avatar.error.encryptedFrames", {
+            type: framesInfo.licenseType || "PERSONAL"
+          });
+          console.error(`[AniaAvatar] ${message}`, {
+            avatarUrl,
+            licenseType: framesInfo.licenseType,
+            frameCount: framesInfo.frameCount,
+            reason: framesInfo.reason
+          });
+          throw new Error(message);
+        }
         const detectedFps = (_c = avatarData.video) == null ? void 0 : _c.fps;
         let finalIdleSpeed = 1;
         let finalTalkSpeed = 1;
@@ -13333,6 +13392,15 @@ const professionalTTSRequest = async (text, provider, config) => {
       const { audioUrl } = await piperSynthesize2(text, {
         speakerId: config.piperSpeakerId
       });
+      return { audioUrl, duration: 0 };
+    } else if (provider === "robsvoice") {
+      const { initRobs, robsSynthesize } = await import("./robs-tts-Cnr87Azu.js");
+      const voiceArg = config.robsVoiceUrl != null ? config.robsVoiceUrl : { acousticUrl: config.robsAcousticUrl, vocoderUrl: config.robsVocoderUrl, manifestUrl: config.robsManifestUrl };
+      const hasVoice = Boolean(config.robsVoiceUrl || config.robsAcousticUrl && config.robsVocoderUrl && config.robsManifestUrl);
+      if (hasVoice) {
+        await initRobs(voiceArg, { onProgress: config.onRobsProgress });
+      }
+      const { audioUrl } = await robsSynthesize(text);
       return { audioUrl, duration: 0 };
     } else if (provider === "azure") {
       const region = config.ttsRegion || "brazilsouth";
@@ -15809,6 +15877,58 @@ const ttsPiperPlugin = {
     };
   }
 };
+const robsVoiceArg = (cfg) => cfg.robsVoiceUrl != null ? cfg.robsVoiceUrl : { acousticUrl: cfg.robsAcousticUrl, vocoderUrl: cfg.robsVocoderUrl, manifestUrl: cfg.robsManifestUrl };
+const hasRobsVoice = (cfg) => Boolean(cfg.robsVoiceUrl || cfg.robsAcousticUrl && cfg.robsVocoderUrl && cfg.robsManifestUrl);
+const ttsRobsVoicePlugin = {
+  id: "tts-robsvoice",
+  name: "Robs Voice (on-device ONNX, beta)",
+  version: "1.4.0",
+  kind: "tts",
+  builtin: true,
+  description: "Browser-side neural pt-BR TTS (Matcha + Vocos) via robs-tts + onnxruntime-web.",
+  async init(ctx) {
+    const cfg = ctx && ctx.config || {};
+    if (hasRobsVoice(cfg)) {
+      const { preloadRobs } = await import("./robs-tts-Cnr87Azu.js");
+      preloadRobs(robsVoiceArg(cfg)).catch(() => {
+      });
+    }
+  },
+  createEngine: (ctx) => {
+    const cfg = ctx && ctx.config || {};
+    let current = null;
+    return {
+      async synthesize(text) {
+        const { initRobs, robsSynthesize } = await import("./robs-tts-Cnr87Azu.js");
+        if (hasRobsVoice(cfg)) await initRobs(robsVoiceArg(cfg));
+        return robsSynthesize(text);
+      },
+      async speak(text, options = {}) {
+        const { audioUrl } = await this.synthesize(text, options);
+        if (current) {
+          try {
+            current.pause();
+          } catch (e) {
+          }
+        }
+        const audio = new Audio(audioUrl);
+        current = audio;
+        audio.addEventListener("ended", () => URL.revokeObjectURL(audioUrl), { once: true });
+        await audio.play();
+        return audio;
+      },
+      stop() {
+        if (current) {
+          try {
+            current.pause();
+          } catch (e) {
+          }
+          current = null;
+        }
+      }
+    };
+  }
+};
 const sttBrowserPlugin = {
   id: "stt-browser",
   name: "Browser STT (Web Speech)",
@@ -15851,6 +15971,7 @@ const BUILTIN_PLUGINS = [
   ttsGooglePlugin,
   ttsAzurePlugin,
   ttsPiperPlugin,
+  ttsRobsVoicePlugin,
   sttBrowserPlugin,
   sttGooglePlugin,
   actionAudioPlugin
@@ -15861,7 +15982,8 @@ const TTS_PROVIDER_TO_PLUGIN = {
   elevenlabs: "tts-elevenlabs",
   google: "tts-google",
   azure: "tts-azure",
-  piper: "tts-piper"
+  piper: "tts-piper",
+  robsvoice: "tts-robsvoice"
 };
 const STT_PROVIDER_TO_PLUGIN = {
   browser: "stt-browser",
@@ -16754,6 +16876,13 @@ const AvatarChatbot = ({
   // false = lazy: the model is fetched only when the user first opens the
   // chat, keeping it off the page-load critical path.
   piperPreload = false,
+  // ---- Robs Voice TTS (on-device neural pt-BR, beta) ----
+  // Base dir holding acoustic.onnx + vocoder.onnx + robsvoice.json, OR set the
+  // three explicit urls below. Active when ttsProvider="robsvoice".
+  robsVoiceUrl = null,
+  robsAcousticUrl = null,
+  robsVocoderUrl = null,
+  robsManifestUrl = null,
   // ---- Plugin architecture ----
   // Consumer-supplied custom plugins (custom TTS/STT/action/integration). The
   // library built-ins are always registered; these are added on top and can
@@ -16907,7 +17036,11 @@ const AvatarChatbot = ({
       piperModelUrl,
       piperModelConfigUrl,
       piperPitch,
-      piperSpeed
+      piperSpeed,
+      robsVoiceUrl,
+      robsAcousticUrl,
+      robsVocoderUrl,
+      robsManifestUrl
     }
   });
   const lipSync = useLipSync({ enabled: lipSyncEnabled && ttsProvider !== "browser" });
@@ -18949,6 +19082,7 @@ export {
   toJSON as configuratorToJSON,
   toJSX as configuratorToJSX,
   createTranslator,
+  decryptAniaFile,
   deleteCachedAvatar,
   disposePiper,
   executeCommand,
@@ -18970,7 +19104,9 @@ export {
   getWakeWordEngine,
   hasLocale,
   initPiper,
+  inspectAvatarFrames,
   installPostMessageControl,
+  isPlainMarketAnia,
   isWakeWordSupported,
   matchesHotkey,
   parseCommandLine,
