@@ -19,14 +19,41 @@ import { chunkText } from '../utils/tts-chunker.js';
  * Backward compatible: ttsChunking=false, or a single-sentence text, behaves
  * exactly like the previous one-shot synth (no inter-chunk gap added).
  */
+/** Deprecation notices are per-key and process-wide, never per render. */
+const warnedTimingProps = new Set();
+
 export const useTTSDetection = ({
-  pauseThreshold = 150,
-  idleTransitionDelay = 400,
-  talkStartDelay = 0,
-  minTalkDuration = 500,
-  minIdleDuration = 300,
+  // ---- deprecated timing knobs (1.13.0) ----
+  //
+  // Talk state used to be a single boolean doing two jobs, driven by timers.
+  // It is now split, the way the desktop player splits it:
+  //
+  //   SESSION  (here)    "a reply is being spoken" — driven only by real audio
+  //                      events, and it selects the talk frame RANGE.
+  //   VOICING  (runtime) "sound is coming out right now" — driven by the audio
+  //                      envelope, and it decides whether the mouth moves.
+  //
+  // So `isTalking` staying true across the inter-chunk gap is now CORRECT: the
+  // avatar is mid-reply, on talk frames, with its mouth shut because the gate
+  // says silence. Every knob below existed to paper over the missing voicing
+  // gate, and each one caused a visible artefact of its own.
+  pauseThreshold = undefined,
+  talkStartDelay = undefined,
+  minTalkDuration = undefined,
+  minIdleDuration = undefined,
+  // Retained: the session-end delay. Default 0 — the mouth is already shut by
+  // the voicing gate, so there is nothing left to hide.
+  idleTransitionDelay = 0,
   onTalkStart,
   onTalkEnd,
+  // Fired when speech is cancelled or the queue drains, so the host can shut
+  // the mouth NOW. Without it the avatar holds whatever talk frame it was on,
+  // waiting for an audio block that will never arrive.
+  onForceLipsClosed,
+  // Fired once per word boundary on the browser SpeechSynthesis path, which
+  // exposes no waveform to analyse. Lets the host drive per-syllable movement
+  // instead of a binary talk/idle flap.
+  onSyntheticPulse,
   ttsProvider = "browser",
   ttsConfig = {},
   // ---- streaming/chunked config ----
@@ -46,6 +73,22 @@ export const useTTSDetection = ({
   onChunkAudio
 } = {}) => {
   const [isTalking, setIsTalking] = useState(false);
+
+  // Warn once per key, not per render: this sits in a hook that re-runs on
+  // every message.
+  useEffect(() => {
+    const gone = { pauseThreshold, talkStartDelay, minTalkDuration, minIdleDuration };
+    for (const key of Object.keys(gone)) {
+      if (gone[key] === undefined || warnedTimingProps.has(key)) continue;
+      warnedTimingProps.add(key);
+      console.warn(
+        `[useTTSDetection] \`${key}\` is deprecated and ignored since 1.13.0. ` +
+          'Mouth movement is now driven by the audio envelope (a voicing gate that ' +
+          'opens ~60ms after sound starts and closes ~180ms after it stops), not by ' +
+          'timers. This prop only ever existed to paper over the missing gate.'
+      );
+    }
+  }, [pauseThreshold, talkStartDelay, minTalkDuration, minIdleDuration]);
   const pauseTimeoutRef = useRef(null);
   const idleTransitionTimeoutRef = useRef(null);
   const talkStartTimeoutRef = useRef(null);
@@ -53,8 +96,6 @@ export const useTTSDetection = ({
   const lastBoundaryTimeRef = useRef(null);
   const isSpeakingRef = useRef(false);
   const audioRef = useRef(null);
-  const lastTalkActivationRef = useRef(null);
-  const lastIdleActivationRef = useRef(null);
 
   // ---- queue state ----
   // A monotonically increasing token; every new speak() / cancel() bumps it so
@@ -73,68 +114,23 @@ export const useTTSDetection = ({
   const isPlayingRef = useRef(false);
   const playReleaseRef = useRef(null);
 
+  // Start the talk session. Immediate and unconditional: this is called from a
+  // real `audio.onplay` / `utterance.onstart`, so the sound is ALREADY coming
+  // out. Every delay that used to sit here (talkStartDelay, and the remaining
+  // minIdleDuration hold) postponed the mouth while audio was playing, which is
+  // the wrong direction to err in.
   const activateTalk = useCallback(() => {
     if (idleTransitionTimeoutRef.current) {
       clearTimeout(idleTransitionTimeoutRef.current);
       idleTransitionTimeoutRef.current = null;
     }
-    if (talkStartTimeoutRef.current) return;
+    setIsTalking((prev) => {
+      if (!prev && onTalkStart) onTalkStart();
+      return true;
+    });
+  }, [onTalkStart]);
 
-    const now = Date.now();
-    const timeSinceIdle = lastIdleActivationRef.current ? now - lastIdleActivationRef.current : Infinity;
-
-    const doActivate = () => {
-      lastTalkActivationRef.current = Date.now();
-      setIsTalking((prev) => {
-        if (!prev) {
-          if (onTalkStart) onTalkStart();
-        }
-        return true;
-      });
-      talkStartTimeoutRef.current = null;
-    };
-
-    // If we just went idle, don't DROP the activation (audio is actually
-    // playing — the caller only signals this once per chunk); defer it for the
-    // remaining debounce window instead.
-    const idleHoldRemaining = Math.max(0, minIdleDuration - timeSinceIdle);
-    const delay = Math.max(talkStartDelay, idleHoldRemaining);
-
-    if (delay > 0) {
-      talkStartTimeoutRef.current = setTimeout(doActivate, delay);
-    } else {
-      doActivate();
-    }
-  }, [onTalkStart, talkStartDelay, minIdleDuration]);
-
-  const deactivateTalk = useCallback(() => {
-    const now = Date.now();
-    const timeSinceTalk = lastTalkActivationRef.current ? now - lastTalkActivationRef.current : Infinity;
-
-    const effectiveDelay = Math.max(idleTransitionDelay, minTalkDuration - timeSinceTalk);
-
-    if (idleTransitionTimeoutRef.current) {
-      clearTimeout(idleTransitionTimeoutRef.current);
-    }
-
-    idleTransitionTimeoutRef.current = setTimeout(() => {
-      lastIdleActivationRef.current = Date.now();
-      setIsTalking((prev) => {
-        if (prev) {
-          if (onTalkEnd) onTalkEnd();
-        }
-        return false;
-      });
-      idleTransitionTimeoutRef.current = null;
-    }, effectiveDelay);
-  }, [idleTransitionDelay, onTalkEnd, minTalkDuration]);
-
-  const resetPauseTimeout = useCallback(() => {
-    if (pauseTimeoutRef.current) {
-      clearTimeout(pauseTimeoutRef.current);
-    }
-    activateTalk();
-  }, [activateTalk]);
+  const resetPauseTimeout = activateTalk;
 
   // ---- low-level: stop everything currently producing sound ----
   const revokeAllUrls = useCallback(() => {
@@ -157,8 +153,11 @@ export const useTTSDetection = ({
       clearTimeout(gapTimeoutRef.current);
       gapTimeoutRef.current = null;
     }
-    // A pending pause-watchdog could otherwise fire after we stop and
-    // re-activate talk — clear it so isTalking can't get stuck on.
+    // Shut the mouth NOW, before tearing the element down. The voicing gate
+    // is fed by the analyser, and the analyser is about to go silent forever;
+    // without an explicit close the avatar holds its current talk frame waiting
+    // for an audio block that has just been cancelled.
+    if (onForceLipsClosed) onForceLipsClosed();
     if (pauseTimeoutRef.current) {
       clearTimeout(pauseTimeoutRef.current);
       pauseTimeoutRef.current = null;
@@ -193,19 +192,35 @@ export const useTTSDetection = ({
     isSpeakingRef.current = false;
     isPlayingRef.current = false;
     revokeAllUrls();
-  }, [revokeAllUrls]);
+  }, [revokeAllUrls, onForceLipsClosed]);
 
-  // Schedule the avatar -> idle transition (after the WHOLE queue drains).
+  // End the talk session (the WHOLE queue has drained).
+  //
+  // This used to be a bare setTimeout wired to `postTalkDelay`, whose chatbot
+  // default was 1500 ms: the avatar kept talk-cycling for a second and a half
+  // after the last chunk's real `ended` event. That is the "the audio stops but
+  // it keeps talking" report, and it was a timer, not a bug in the audio path.
+  //
+  // The mouth is now already shut — the voicing gate closed it ~180 ms after
+  // the waveform went quiet, before this ever runs. All that is left is to drop
+  // out of the talk frame range, which needs no delay at all.
   const scheduleIdle = useCallback(() => {
     if (idleTransitionTimeoutRef.current) {
       clearTimeout(idleTransitionTimeoutRef.current);
+      idleTransitionTimeoutRef.current = null;
     }
-    idleTransitionTimeoutRef.current = setTimeout(() => {
+    const finish = () => {
       setIsTalking(false);
       if (onTalkEnd) onTalkEnd();
+      if (onForceLipsClosed) onForceLipsClosed();
       idleTransitionTimeoutRef.current = null;
-    }, idleTransitionDelay);
-  }, [idleTransitionDelay, onTalkEnd]);
+    };
+    if (idleTransitionDelay > 0) {
+      idleTransitionTimeoutRef.current = setTimeout(finish, idleTransitionDelay);
+    } else {
+      finish();
+    }
+  }, [idleTransitionDelay, onTalkEnd, onForceLipsClosed]);
 
   // ===== Provider: cloud / piper (audio element per chunk) =====
   // Synthesize one chunk to an objectURL. Honors the AbortController for fetch.
@@ -397,6 +412,13 @@ export const useTTSDetection = ({
       utterance.onboundary = () => {
         lastBoundaryTimeRef.current = Date.now();
         resetPauseTimeout();
+        // SpeechSynthesis gives us no waveform, so there is nothing for the
+        // analyser to measure and the mouth would otherwise just flap on a
+        // binary talk/idle. `onboundary` does fire once per word though, and
+        // pushing a pulse through the SAME envelope and branch machinery gives
+        // genuine per-syllable articulation. (Chrome only fires this for LOCAL
+        // voices; remote ones stay on the coarse fallback.)
+        if (onSyntheticPulse) onSyntheticPulse(1);
       };
       utterance.onend = () => {
         if (genRef.current !== myGen) return;

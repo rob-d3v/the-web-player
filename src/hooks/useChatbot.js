@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
+import { getDeviceId } from '../utils/device-id.js';
 
 // Friendly, localized fallback copy shown to the user when the webhook fails.
 // `translate` is the AvatarChatbot's i18n resolver (tr.t); when absent (the hook
@@ -38,6 +39,20 @@ export const useChatbot = ({
   onError,
   formatRequest,
   parseResponse,
+  // Host-supplied constant fields merged into EVERY webhook POST body (e.g. a
+  // tenant/route context the backend needs to route the prompt). They are
+  // merged FIRST, so `message`, `attachments` and the flow metadata
+  // (sessionId/collected/escalate) can never be clobbered by host config.
+  // Default `null` = body identical to before.
+  extraPayload = null,
+  // A stable per-browser id, sent on EVERY request as both a header and a body
+  // field. Without one the backend proxy drops the session header and the agent
+  // falls back to deriving a session from SHA-256(prompt + first message) — the
+  // same value for every visitor, so all of them share one transcript. That is
+  // the 'interacting on one PC advances another PC' bug.
+  // `false` opts out; Global Privacy Control is honoured automatically.
+  deviceIdEnabled = true,
+  deviceId: deviceIdOverride,
   availableActions = [],
   onActionTriggered,
   // Optional i18n resolver (AvatarChatbot passes tr.t). Used only to localize
@@ -45,6 +60,19 @@ export const useChatbot = ({
   translate
 } = {}) => {
   const [messages, setMessages] = useState([]);
+
+  // Resolved once per mount: reading storage on every keystroke is pointless
+  // and the value cannot change under us.
+  const deviceId = useMemo(
+    () => deviceIdOverride || getDeviceId({ enabled: deviceIdEnabled }),
+    [deviceIdOverride, deviceIdEnabled]
+  );
+  // One conversation per tab. Two tabs in the same browser share a deviceId but
+  // are separate conversations, which is what someone opening a second tab
+  // expects. Reset by clearMessages().
+  const conversationIdRef = useRef(null);
+  if (!conversationIdRef.current) conversationIdRef.current = getDeviceId({ enabled: false });
+
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -126,9 +154,20 @@ export const useChatbot = ({
         ? availableActions.map(a => ({ id: a.id, name: a.name }))
         : undefined;
 
+      // Identity goes in before host config cannot clobber it, and before
+      // restMetadata so an active flow's own sessionId still wins.
+      const identity = { deviceId, sessionId: conversationIdRef.current };
+
       const requestBody = formatRequest
-        ? formatRequest(message, { ...metadata, availableActions: actionsList })
+        ? formatRequest(message, {
+            ...(extraPayload || {}),
+            ...identity,
+            ...metadata,
+            availableActions: actionsList
+          })
         : {
+            ...(extraPayload || {}),
+            ...identity,
             message,
             attachments: attachments.length > 0 ? attachments : undefined,
             availableActions: actionsList,
@@ -137,6 +176,10 @@ export const useChatbot = ({
 
       const headers = {
         "Content-Type": "application/json",
+        // Headers, not only the body: a host supplying its own formatRequest
+        // reshapes the body entirely, and identity has to survive that.
+        "X-Ania-Device-Id": deviceId,
+        "X-Ania-Session-Id": (metadata && metadata.sessionId) || conversationIdRef.current,
         ...webhookHeaders
       };
 
@@ -237,19 +280,34 @@ export const useChatbot = ({
         isError: true
       };
       setMessages((prev) => [...prev, errorMessage]);
-      // Surface the SAME friendly copy in the error chip — never a raw `HTTP <code>`.
-      setError(friendlyMessage);
+      // Deliberately NOT `setError(friendlyMessage)` as well. The bubble and the
+      // error chip both render the same string, so a failed send printed the
+      // apology twice — once inside the conversation, where it has context and
+      // sits next to the message it failed on, and once as a sticky chip pinned
+      // at the bottom that only clears on the NEXT send. On a phone that chip
+      // also cost 34px of a column that was already too short.
+      //
+      // The bubble is the better of the two, so it is the one that stays. The
+      // `error` state is left for failures that have no bubble to live in — a
+      // missing webhook URL, which is a configuration fault the visitor cannot
+      // act on and which never produces a turn in the conversation.
       if (onError) {
         onError(err, friendlyMessage);
       }
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered, translate]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, extraPayload, onResponse, onError, availableActions, onActionTriggered, translate]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
+    // Start a genuinely new conversation on the backend too. Without this the
+    // transcript is cleared locally but the agent keeps replying with the old
+    // one in context, which reads as "clear did nothing". The deviceId is NOT
+    // reset — this is a new conversation from the same browser, not a new
+    // browser.
+    conversationIdRef.current = getDeviceId({ enabled: false });
   }, []);
 
   return {
@@ -257,6 +315,8 @@ export const useChatbot = ({
     sendMessage,
     isLoading,
     error,
-    clearMessages
+    clearMessages,
+    deviceId,
+    conversationId: conversationIdRef.current
   };
 };

@@ -84,6 +84,10 @@ const AvatarChatbotWidget = ({
   idleSpeed = undefined,
   talkSpeed = undefined,
   autoCalculateSpeed = true,
+  // Playback is held to 24-30 fps by default so every avatar looks
+  // consistent. `false` restores the legacy unbounded behaviour;
+  // `{min, max}` sets a custom window. Forwarded to <AniaAvatar>.
+  fpsClamp = undefined,
   showSpeedControls = false,
   startMinimized = false,
   preserveQuality = true,
@@ -143,6 +147,18 @@ const AvatarChatbotWidget = ({
   // n8n authentication
   webhookApiKey = null,
   webhookHeaders = {},
+  // Constant fields merged into EVERY webhook POST body — the host's way of
+  // telling the backend something the widget itself does not know (tenant,
+  // route context, campaign...). Merged FIRST, so it can never overwrite
+  // `message`, `attachments` or the flow metadata. Default `null` = the body
+  // is byte-for-byte what it was before this prop existed.
+  extraPayload = null,
+  // A stable per-browser id is sent with every message so the backend can keep
+  // visitors' conversations apart. `false` opts out — note that without it the
+  // backend cannot distinguish visitors and may merge them. It is a persistent
+  // identifier, so it belongs in the host's privacy notice; Global Privacy
+  // Control is honoured automatically.
+  deviceIdEnabled = true,
   // Client-side responder override. When provided, the chat calls this instead
   // of POSTing to webhookUrl — receives (message, metadata), returns the reply
   // (a string, or an object with { message, attachments?, action? }). Use it for
@@ -150,12 +166,19 @@ const AvatarChatbotWidget = ({
   // required. See useChatbot.
   onSendMessage,
   // Lip sync props
-  lipSyncEnabled = false,
+  // Default ON since 1.13.0. The sweep model works fully without any openness
+  // map — branch C never consults one — so this costs nothing and no network.
+  lipSyncEnabled = true,
   // null = origem padrão da API ANIA (ver AniaAvatar / lip-sync-api.js).
   lipSyncServerUrl = null,
   // Com lip sync ligado, baixa sozinho a melhor config publicada para este
   // avatar (contentHash) e aplica; false = só o que veio no .ania + props.
-  lipSyncAutoFetch = true,
+  // Default OFF since 1.13.0, deliberately paired with lipSyncEnabled going ON.
+  // Leaving BOTH on would make every host page issue a third-party request to
+  // the lip sync server on mount: a CSP break, a privacy-notice item, and a new
+  // hard dependency in the first-paint path. Not an acceptable side effect of a
+  // rendering fix. Maps authored into the .ania still work with zero network.
+  lipSyncAutoFetch = false,
   lipSyncConfigId = null,
   lipSyncMaxCandidates = 5,
   onLipSyncConfig = null,
@@ -292,6 +315,10 @@ const AvatarChatbotWidget = ({
     if (typeof talkSpeed === 'number') setCurrentTalkSpeed(talkSpeed);
   }, [talkSpeed]);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
+  // The avatar reported that it cannot be shown. Distinct from "not loaded yet":
+  // this is terminal, and the chat has to stop waiting for a face that is never
+  // coming. Two apps in the fleet ship no `aniaplayer.min.js` at all.
+  const [avatarFailed, setAvatarFailed] = useState(false);
   const [isCurrentlyMinimized, setIsCurrentlyMinimized] = useState(startMinimized);
   const [attachments, setAttachments] = useState([]);
   // Typed value for the current flow INPUT node (free-text lead capture).
@@ -369,14 +396,27 @@ const AvatarChatbotWidget = ({
   // per element, so we MUST reconnect per chunk for the mouth to track it.
   const lipSyncConnectRef = useRef(null);
 
+  // Reaches the animation controller so speech-end and word boundaries can act
+  // on it directly. Declared here because useTTSDetection is created BEFORE the
+  // avatar ref exists.
+  const lipsControlRef = useRef({ close: null, pulse: null });
+
   const { isTalking, speak, cancel } = useTTSDetection({
-    pauseThreshold: 350,
-    idleTransitionDelay: postTalkDelay,
-    talkStartDelay: talkStartDelay,
-    minTalkDuration: minTalkDuration,
-    minIdleDuration: minIdleDuration,
+    // The four timing knobs are gone: mouth movement is driven by the audio
+    // envelope now, not by timers. See the deprecation note in useTTSDetection.
+    // `postTalkDelay` in particular defaulted to 1500 ms here, which is why the
+    // avatar kept talking for a second and a half after the audio ended.
+    idleTransitionDelay: 0,
     onTalkStart: () => {},
     onTalkEnd: () => {},
+    onForceLipsClosed: () => {
+      const close = lipsControlRef.current && lipsControlRef.current.close;
+      if (close) close();
+    },
+    onSyntheticPulse: (v) => {
+      const pulse = lipsControlRef.current && lipsControlRef.current.pulse;
+      if (pulse) pulse(v);
+    },
     ttsProvider: ttsProvider,
     ttsChunking: ttsChunking,
     chunkGapMs: chunkGapMs,
@@ -408,7 +448,10 @@ const AvatarChatbotWidget = ({
   });
 
   // Lip sync hook — Web Audio FFT analysis
-  const lipSync = useLipSync({ enabled: lipSyncEnabled && ttsProvider !== 'browser' });
+  // No longer gated on the provider. The browser SpeechSynthesis path has no
+  // element to analyse, but it drives the same envelope via synthetic pulses,
+  // and the hook is inert when nothing is connected to it.
+  const lipSync = useLipSync({ enabled: lipSyncEnabled });
 
   // Keep the per-chunk reconnect ref pointed at the current connect fn.
   useEffect(() => {
@@ -622,9 +665,11 @@ const AvatarChatbotWidget = ({
   };
 
   const { messages, sendMessage, isLoading, error } = useChatbot({
+    deviceIdEnabled,
     webhookUrl,
     webhookApiKey,
     webhookHeaders,
+    extraPayload,
     onSendMessage,
     availableActions,
     // Localize the friendly fallback copy (chat.error.generic) shown on failure.
@@ -750,7 +795,13 @@ const AvatarChatbotWidget = ({
   // conversation after escalation — otherwise free-text dropped the flow state.
   // Returns {} when no flow is active so non-flow usage is unchanged.
   const buildFlowMetadata = useCallback(() => {
-    if (!activeFlow) return {};
+    // Returning {} when no flow was mounted is what let the backend fall through
+    // to its shared-transcript fallback: no sessionId in the body, so the proxy
+    // dropped the session header, so the agent derived one from the prompt text
+    // — the same value for every visitor. appId still identifies the app; the
+    // per-browser and per-tab ids are added by useChatbot itself, so they are
+    // present on every path including the `ask` command verb.
+    if (!activeFlow) return { appId };
     return {
       sessionId: flow_.sessionId,
       appId: appId,
@@ -779,7 +830,7 @@ const AvatarChatbotWidget = ({
         });
       }
     },
-    ask: (text) => { if (sendMessageRef.current) sendMessageRef.current(text); },
+    ask: (text) => { if (sendMessageRef.current) sendMessageRef.current(text, buildFlowMetadata()); },
     stopSpeaking: () => { if (cancelTtsRef.current) cancelTtsRef.current(); },
     triggerWake: () => { if (onWake) onWake(); else if (wakeTriggerRef.current) wakeTriggerRef.current(); },
     flowGoto: (nodeId) => { if (flowGotoRef.current) flowGotoRef.current(nodeId); },
@@ -907,16 +958,25 @@ const AvatarChatbotWidget = ({
     : allMessages;
 
   // ---- Scroll behavior ----
-  // FREE-TEXT AI chat (no live flow node): scroll to the bottom so the latest
-  // reply is in view — the original, correct behavior.
-  // LIVE FLOW node: do NOT scroll to the bottom (that buried the question under
-  // the options). Instead scroll the PINNED question to the TOP of the view so
-  // the user reads the question first, then scrolls down to the options.
+  // Scroll the transcript to the latest message. This runs in BOTH modes.
+  //
+  // It used to bail out whenever a flow node was live, because back then the
+  // question and its options lived inside the transcript and scrolling to the
+  // bottom buried the question under them. v1.7.1 moved both out into
+  // `flowInteractionRegion` (see the pinned-question block below), and the bail
+  // was left behind. The cost: with a flow node live, nothing scrolled the
+  // transcript at all — the effect underneath only fires when the NODE changes,
+  // and sending a message does not change the node. Measured at 478x826: the
+  // transcript sat at scrollTop 0 with 24px of content below the fold, so the
+  // user's own message rendered 19px past the visible edge and was read as
+  // "it cut my blue bubble off".
+  //
+  // `block: 'end'` rather than the default so it scrolls the transcript to its
+  // own bottom instead of scrolling ancestors to centre the sentinel.
   const flowNodeId2 = flowNode ? flowNode.id : null;
   useEffect(() => {
-    if (flowNodeActive) return; // handled by the question-pinning effect below
     var _a;
-    (_a = messagesEndRef.current) == null ? void 0 : _a.scrollIntoView({ behavior: "smooth" });
+    (_a = messagesEndRef.current) == null ? void 0 : _a.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [allMessages, flowNodeActive]);
 
   // On each NEW live flow node, bring the pinned question to the TOP of the
@@ -938,6 +998,24 @@ const AvatarChatbotWidget = ({
     }
     controller.setTalkingState(isTalking);
   }, [isTalking, avatarRef]);
+
+  // Point the TTS callbacks at the live controller. Feature-detected: an app
+  // still serving an aniaplayer.min.js older than ext 2.0.0 simply has neither
+  // method, and degrades to the previous behaviour instead of throwing.
+  useEffect(() => {
+    var _a, _b;
+    const controller = (_b = (_a = avatarRef == null ? void 0 : avatarRef.playerRef) == null ? void 0 : _a.current) == null ? void 0 : _b.animationController;
+    if (!controller) return;
+    lipsControlRef.current = {
+      close: typeof controller.forceLipsClosed === 'function'
+        ? () => { try { controller.forceLipsClosed(); } catch (e) {} }
+        : null,
+      pulse: typeof controller.pushSyntheticOpenness === 'function'
+        ? (v) => { try { controller.pushSyntheticOpenness(v); } catch (e) {} }
+        : null
+    };
+    return () => { lipsControlRef.current = { close: null, pulse: null }; };
+  }, [avatarRef, isAvatarLoaded]);
 
   // The chatbot owns the talk state (AniaAvatar's internal detection is off in
   // this mode), so when the user returns to the tab we re-assert the CURRENT
@@ -1347,12 +1425,20 @@ const AvatarChatbotWidget = ({
   // reads first. Backward-compatible: null when no flow node is active.
   const flowInteractionRegion = flowNodeActive ? jsxs("div", {
     style: {
-      flexShrink: 0,
+      // Shrinkable, not rigid. This region already has its own scrolling
+      // sub-area for the answer affordances, but that scroller never engaged:
+      // with `flexShrink: 0` the region kept its full natural height and the
+      // transcript — the only flexible sibling — absorbed the entire squeeze.
+      // Measured at 478x826 with six options: region 246px, transcript 168px.
+      // The answers scroll now instead of the conversation disappearing.
+      flexShrink: 1,
+      minHeight: 120,
       display: "flex",
       flexDirection: "column",
-      minHeight: 0,
       // Cap the whole region so it + transcript + input bar fit small screens.
-      maxHeight: `min(55vh, max(180px, calc(100vh - ${height + 140}px)))`,
+      // `dvh`, not `vh`: on mobile `vh` is the LARGE viewport, which counts the
+      // space behind the browser's own chrome.
+      maxHeight: `min(55dvh, max(180px, calc(100dvh - ${height + 140}px)))`,
       margin: "0 0 4px",
       padding: "10px 12px 4px",
       borderTop: "1px solid rgba(0,0,0,0.06)",
@@ -1441,9 +1527,14 @@ const AvatarChatbotWidget = ({
       idleSpeed: currentIdleSpeed,
       talkSpeed: currentTalkSpeed,
       autoCalculateSpeed,
+      fpsClamp,
       preserveQuality,
       alwaysOnTop,
-      startMinimized: startMinimized || !isAvatarLoaded,
+      // Start minimised while the avatar is still loading — but not forever.
+      // `!isAvatarLoaded` alone meant that an app whose `/player/aniaplayer.min.js`
+      // 404s could never open its chat, because the flag that un-minimises it is
+      // set by an avatar that never arrives. The chat does not need the avatar.
+      startMinimized: startMinimized || (!isAvatarLoaded && !avatarFailed),
       // Lip sync passthrough
       lipSyncEnabled,
       lipSyncServerUrl,
@@ -1465,6 +1556,11 @@ const AvatarChatbotWidget = ({
       onLoad: (player) => {
         setAvatarRef({ playerRef: { current: player } });
         setIsAvatarLoaded(true);
+        setAvatarFailed(false);
+      },
+      onError: (err) => {
+        console.warn('[AvatarChatbot] avatar unavailable, continuing without it:', err);
+        setAvatarFailed(true);
       },
       onToggleMinimize: handleMinimizeToggle,
       onClose,
@@ -1483,11 +1579,16 @@ const AvatarChatbotWidget = ({
             className: "ania-chat-scroll",
             style: {
               flex: "1 1 auto",
-              minHeight: "60px",
+              // A real floor, not 60px. The transcript used to be the only
+              // shrinkable block in the column, so every rigid sibling took its
+              // space and it collapsed to 168px — a fifth of the screen for the
+              // conversation itself. Now that the avatar and the flow region
+              // both give way, this floor is what stops the squeeze here.
+              minHeight: "min(180px, 24dvh)",
               // Growth cap only — when space is tight the flex parent (which is
               // clamped to the viewport) shrinks this area, so the input bar is
-              // never pushed off screen. No viewport math needed here.
-              maxHeight: flowNodeActive ? "min(220px, 30vh)" : "min(420px, 48vh)",
+              // never pushed off screen.
+              maxHeight: flowNodeActive ? "min(320px, 40dvh)" : "min(420px, 48dvh)",
               overflowY: "auto",
               padding: "14px 14px 6px",
               WebkitOverflowScrolling: "touch",
@@ -1723,7 +1824,17 @@ const AvatarChatbotWidget = ({
 
           // ========== BARRA DE INPUT ==========
           jsxs("div", {
-            style: { padding: "8px 12px", display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 },
+            // The bottom padding clears the home indicator / gesture bar. Without
+            // it the send button sits underneath the system UI on an iPhone and
+            // on gesture-navigation Android.
+            style: {
+              padding: "8px 12px",
+              paddingBottom: "calc(8px + env(safe-area-inset-bottom, 0px))",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              flexShrink: 0
+            },
             children: [
               // Botão anexar
               enableAttachments && jsx("button", {

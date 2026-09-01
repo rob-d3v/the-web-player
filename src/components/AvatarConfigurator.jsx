@@ -71,8 +71,15 @@ const SECTIONS = [
     label: 'Animation',
     fields: [
       { key: 'autoCalculateSpeed', label: 'Auto-calculate speed', type: 'boolean', def: true },
-      { key: 'idleSpeed', label: 'Idle speed', type: 'number', def: 1, min: 0.1, max: 5, step: 0.1 },
-      { key: 'talkSpeed', label: 'Talk speed', type: 'number', def: 1, min: 0.1, max: 5, step: 0.1 },
+      // Range narrowed in 1.13.0. These are now multipliers relative to the
+      // .ania's own frame rate, and the result is held inside fpsClamp
+      // (24-30 fps by default) — a window only 1.25x wide. The old 0.1-5
+      // range mostly mapped onto the clamp boundaries, so dragging the
+      // slider past ~1.25 changed nothing and read as 'the control is
+      // broken'. Set fpsClamp={false} on the component to get the full
+      // unbounded range back.
+      { key: 'idleSpeed', label: 'Idle speed (x native fps)', type: 'number', def: 1, min: 0.5, max: 1.5, step: 0.05 },
+      { key: 'talkSpeed', label: 'Talk speed (x native fps)', type: 'number', def: 1, min: 0.5, max: 1.5, step: 0.05 },
       { key: 'showSpeedControls', label: 'Show speed controls', type: 'boolean', def: false },
       { key: 'talkStartDelay', label: 'Talk start delay (ms)', type: 'number', def: 0, min: 0, max: 5000, step: 50 },
       { key: 'postTalkDelay', label: 'Post-talk delay (ms)', type: 'number', def: 1500, min: 0, max: 10000, step: 50 },

@@ -2,6 +2,305 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [Unreleased]
+
+### Fixed — the mouth no longer hangs open after a sentence
+The silence branch walked to the closed-mouth frame at up to 3 frames per tick,
+which makes the close time proportional to the DISTANCE — and the distance is
+wherever the ping-pong sweep happened to be when the audio stopped, up to half
+the talk range. Measured in a real browser on a 251-frame range: **1.9 s** to
+shut the mouth after a sentence, on every machine, because the cap and not the
+frame rate was the bottleneck.
+
+The budget is a deadline now: shut within `closeMs` (default 200) of the gate
+going quiet, with the per-tick step derived from the measured poll interval,
+floored at `maxSnapStep` so short distances still animate, and ceilinged at a
+tenth of the range so it never reads as a cut. Worst case **2800 ms -> 333 ms**;
+measured end to end in the browser harness at **380 ms**.
+
+### Fixed — the chat is usable on a phone again
+Reported with a screenshot at ~478x826: the user's own message cut off, the
+avatar filling the top half, the input row under the browser chrome.
+
+- **The transcript never scrolled while a flow node was live.** The scroll
+  effect bailed on `flowNodeActive` — correct in v1.7.0, when the question and
+  its options lived inside the transcript, obsolete since v1.7.1 moved both
+  out. Nothing else scrolls on a new message, so the newest bubble rendered
+  past the visible edge.
+- **Only the transcript could shrink.** The avatar stage, the flow region, the
+  input bar and the error toast were all `flexShrink: 0`, so the transcript
+  absorbed every squeeze and collapsed to a fifth of the screen. The stage and
+  the flow region now yield, with floors. The flow region's own answer scroller
+  finally engages, which is what stops six quick-replies from eating the
+  conversation.
+- **`vh` -> `dvh`, in all seven places**, plus `env(safe-area-inset-bottom)` on
+  the input row and the sheet inset. On mobile `vh` is the LARGE viewport: at
+  826px visible the page reports 950, and the bottom of the widget went under
+  the URL bar. The two conflicting viewport clamps are one clamp now.
+- **A failed send printed the apology twice**, as a transcript bubble and as a
+  sticky chip that only cleared on the next send. The bubble stays; `error` is
+  reserved for failures with no bubble to live in, such as a missing webhook
+  URL.
+
+### Added — `onError` on `<AniaAvatar>`, and a bounded wait for the runtime
+The wait for `window.AniaPlayer` polled every 100 ms forever and never set an
+error, so a host page that ships no `aniaplayer.min.js` showed
+"Carregando avatar..." for the life of the tab — and could not open its chat at
+all, because `<AvatarChatbot>` stays minimised until the avatar reports loaded
+and a dead avatar reports nothing.
+
+The wait is bounded at 15 s, the failure is surfaced through the new `onError`
+prop, and the chat opens without a face. It never needed one.
+
+
+### Fixed — speech end is an audio event, not a timer
+`postTalkDelay` defaulted to **1500 ms** in `<AvatarChatbot>`, and the avatar
+kept talk-cycling for all of it after the last chunk's real `ended` event. That
+is the "the sound stops but the avatar keeps talking" report: a timer, not a
+fault in the audio path.
+
+Talk state is now split the way the desktop splits it:
+- **session** (`isTalking`, React) — "a reply is being spoken". Driven only by
+  real `audio.onplay` / `utterance.onstart` / queue-drained events, and it
+  selects the talk frame *range*.
+- **voicing** (runtime) — "sound is coming out right now". Driven by the audio
+  envelope, and it decides whether the mouth *moves*.
+
+So `isTalking` staying true across the inter-chunk gap is now correct: the
+avatar is mid-reply, on talk frames, mouth shut because the gate says silence.
+`chunkGapMs={1000}`, which eight consumer apps pass, no longer means a second of
+flapping at nothing.
+
+- `hardStop()` and queue-drain now call `forceLipsClosed()` on the controller.
+- Talk activation is immediate and unconditional — it fires from an event that
+  means audio is *already* audible, so every delay that used to sit there was
+  postponing the mouth while sound was playing.
+- `useLipSync` gains `getRms()`. `getAmplitude()` returns the window's PEAK,
+  which for speech runs 2-3x the RMS and jumps between frames; the voicing
+  gate's threshold is calibrated in RMS. Both are wired, so a stale runtime
+  falls back to the old signal.
+- The browser SpeechSynthesis path exposes no waveform at all. Its `onboundary`
+  event now drives `pushSyntheticOpenness()`, giving real per-syllable movement
+  through the same envelope instead of a binary talk/idle flap. (Chrome fires
+  `onboundary` only for local voices; remote ones keep the coarse behaviour.)
+- `useLipSync` is no longer gated on `ttsProvider !== 'browser'`.
+
+### Changed — default lip sync on, default auto-fetch off
+`lipSyncEnabled` now defaults to **true**: the sweep model needs no openness map
+(the voiced branch never consults one), so it costs nothing and touches no
+network.
+
+`lipSyncAutoFetch` therefore now defaults to **false**. Leaving both on would
+have made every host page issue a third-party request to the lip sync server on
+mount — a CSP break, a privacy-notice item, and a new hard dependency in the
+first-paint path. Maps authored into the `.ania` still apply with zero network.
+
+### Deprecated
+- `pauseThreshold`, `talkStartDelay`, `minTalkDuration`, `minIdleDuration` —
+  ignored, warn once each. Every one existed to paper over the missing voicing
+  gate. `minIdleDuration` in particular *delayed the mouth opening while audio
+  was already playing*.
+- `detectAudio` — warns. It has never worked: the analyser was created but no
+  source was ever connected, so it always read zeros.
+- `lipSyncAudioRef` — warns. Accepted but never read.
+
+### Fixed — one visitor's conversation no longer leaks into another's
+Reported as "when I interact with the avatar on one PC, the other PC has
+progress". The leak was never client side — `localStorage` is origin- and
+profile-scoped and cannot cross machines. It was a chain of three:
+
+1. `useChatbot` only put a `sessionId` in the body when a **flow** was active.
+   `buildFlowMetadata()` returned `{}` otherwise, and the `ask:` command verb
+   sent no metadata at all.
+2. The backend proxies drop `X-Hermes-Session-Id` when that value is blank.
+3. Receiving no header, the agent falls back to deriving a session id from
+   `SHA-256(system_prompt + first user message)` — byte-identical for every
+   visitor who opens with the same text against the same persona. Everyone
+   landed in one shared transcript.
+
+- New `src/utils/device-id.js`: `getDeviceId` / `resetDeviceId` /
+  `DEVICE_ID_KEY`. `crypto.randomUUID` persisted under `ania.deviceId.v1`, with
+  a `localStorage → sessionStorage → in-memory` fallback chain so Safari private
+  mode and blocked-storage browsers still get a *stable* id rather than a new
+  one per request.
+- `useChatbot` sends `deviceId` and a per-tab `sessionId` on **every** request,
+  as body fields *and* as `X-Ania-Device-Id` / `X-Ania-Session-Id` headers — the
+  headers because a host supplying its own `formatRequest` reshapes the body
+  entirely and identity has to survive that.
+- `buildFlowMetadata()` no longer returns `{}` when no flow is mounted, and the
+  `ask:` verb now passes metadata.
+- `clearMessages()` starts a new backend conversation, not just a cleared list.
+  The `deviceId` is deliberately NOT reset: same browser, new conversation.
+
+> **Privacy.** `deviceId` is a persistent cross-session identifier — a tracking
+> cookie by another name, used here only to keep visitors apart. It belongs in
+> the host's privacy notice. `deviceIdEnabled={false}` turns it off (the backend
+> then cannot distinguish visitors), and `navigator.globalPrivacyControl` is
+> honoured automatically by downgrading to a per-tab id that never touches disk.
+
+This is the client half. The backend proxies must also stop dropping the header
+and must set `X-Hermes-Session-Key`; the agent's derive-from-prompt fallback
+should fail closed. Those are separate changes in separate repos.
+
+### Fixed — frame pacing no longer aliases against the poll rate
+Found by feeding a speech-shaped waveform through the built bundle at 30, 60 and
+120 Hz (`npm run harness:runtime`). Asking for 24 fps actually produced
+**14.3 / 20.4 / 22.7 fps**, depending on the display.
+
+The gate was `if (now - lastFrameTime < interval) return;` followed by
+`lastFrameTime = now`. Because `now` is when the poll happened rather than when
+the frame was *due*, every frame gets pushed out to the next poll boundary and
+the remainder is discarded — so the effective rate is always at or below target,
+by an amount that depends on how the poll rate and the interval beat together.
+
+This was invisible until now: the interval used to be ~7.8 ms (the 128 fps bug),
+shorter than any poll period, so every poll advanced a frame and playback simply
+ran at the display's refresh rate. Clamping to a real 24-30 fps is what exposed
+it. Carrying the remainder in an accumulator makes the average rate correct
+regardless of poll phase, with a re-anchor after a stall so a returning tab does
+not fire a burst of catch-up frames.
+
+Measured after the fix: **24.8 / 24.5 / 23.7 fps**, spread down from 8.4 Hz to
+0.8 Hz. Engaged only when the lib passes `ania_fps_clamp`, so the legacy path
+stays byte-identical.
+
+> Known hardware limit, not a defect: the sweep asks for up to 2.237x the base
+> rate on loud speech, but a 30 Hz display cannot render more than 30 frame
+> changes per second. On such a display the loud/quiet contrast is compressed
+> (26.9 Hz measured, against 42.3 Hz at 60 and 120 Hz).
+
+### Fixed — the mouth now follows the audio instead of chasing a number
+The runtime picked a mouth frame by reading an openness value off the analyser
+and then selecting the talk-range frame whose *authored* openness was nearest
+it. Consecutive rendered frames could therefore be 25 frames apart — the mouth
+teleported around the range chasing a value, and its motion had no relation to
+the rhythm of the speech.
+
+The desktop player does something structurally different, and it is why its lip
+sync reads as correct: it sweeps the talk range back and forth **one frame per
+tick** and lets the audio envelope shorten the per-frame **delay**. Louder
+speech sweeps faster. The talk range in the source footage is itself an
+open-close mouth cycle, so a faster sweep is simply a busier mouth. The openness
+map is consulted only to locate the closed-mouth frame during silence.
+
+The runtime extension (`player-runtime/`, ext 2.0.0-lipsync) now drives
+`LipSyncDsp` + `LipAnimator`:
+- the DSP and envelope advance on **every** rAF, independent of whether a frame
+  is due, so the envelope is fresh at the instant the frame gate opens;
+- the frame interval is the fps-clamped base multiplied by the envelope-derived
+  sweep scale, bounded by `maxSweepBoost` (2.237x) so a loud passage cannot
+  escape the fps clamp;
+- new `forceLipsClosed()` shuts the mouth on cancel/drain. Without it the avatar
+  holds whatever talk frame it was on until an audio block that will never
+  arrive — the "audio stopped but it keeps talking" report;
+- new `pushSyntheticOpenness()` feeds one articulation pulse, so the browser
+  SpeechSynthesis path (which exposes no waveform at all) can drive real
+  per-syllable movement from `onboundary` instead of a binary talk/idle flap;
+- rendering freezes while the tab is hidden, and a returning tab starts from a
+  zero `dt` rather than decaying every filter to its floor in one step.
+
+Largest single-tick frame jump inside the talk range, measured by
+`verify.mjs`: **25 frames before, 3 after**.
+
+Removed `_frameForOpenness` (private; it implemented the wrong model).
+`configureLipsSync` gains an optional **7th** options argument — the first six
+remain a positional contract with every already-deployed bundle.
+
+### Fixed — playback is normalised to 24-30 fps
+Reported as "some avatars are slow, others are way too fast". The runtime
+computes its delay as `frame_duration / speed_slider`, with nothing normalising
+or bounding it. The slider is a bare divisor against a duration authored inside
+the `.ania`, so what it *means* depends on the file. Nearly every consumer app
+hardcodes `idleSpeed={6.4} talkSpeed={5.3}`, which against the legacy 50 ms
+default is `50 / 6.4` = **128 fps**; `diario-de-obra` passes 2.8 and lands at
+56 fps. Same library, same component.
+
+- New `src/utils/frame-rate.js`: `resolveNativeFps` works out the footage's real
+  frame rate (`video.fps`, else a studio-authored frame duration, else frame
+  count over clip duration, else an assumed 25), and `frameIntervalMs` turns a
+  speed multiplier into a bounded per-frame interval.
+- `idleSpeed` / `talkSpeed` are now multipliers **relative to that native rate**
+  rather than absolute divisors, so a given value means the same thing on every
+  avatar.
+- New `fpsClamp` prop: defaults to `{min: 24, max: 30}`, `false` restores the
+  old unbounded behaviour, `{min, max}` sets a custom window.
+- The clamp is applied on BOTH sides. The lib hands the runtime fps-correct,
+  already-clamped durations with a neutral slider — which means an app still
+  serving an old `aniaplayer.min.js` also plays correctly, since the old
+  `duration / 1 / 1` is then the right answer. The runtime's new
+  `getFrameDuration` override re-clamps live `setIdleSpeed`/`setTalkSpeed`
+  calls, and is inert unless the lib passes `ania_fps_clamp`.
+
+The legacy 6.4 / 5.3 / 2.8 values now pin to the ceiling, so every app carrying
+the legacy preset converges on 30 fps. **The nineteen consumer apps need no
+edits.**
+
+### Removed — `src/utils/speed-calculator.js`
+`calculateOptimalSpeeds` derived `idle = fps/10`, `talk = fps/5` — a
+dimensionless number then used as a divisor against a millisecond duration. It
+was never exported from the package root, so no consumer can be importing it.
+
+### Deprecated
+- `autoCalculateSpeed` — ignored, warns once. It disabled the heuristic above,
+  which no longer exists. Use `fpsClamp`.
+- `<AvatarConfigurator>`'s Idle/Talk speed sliders were re-ranged from 0.1-5 to
+  0.5-1.5 (step 0.05). The clamp window is only 1.25x wide, so the old range
+  mostly mapped onto its boundaries and dragging past ~1.25 did nothing.
+
+### Added — lip sync DSP + frame animator ported from the desktop player
+The desktop player's lip sync is visually correct and the web one is not, for a
+structural reason: the web bundle picks a frame by looking the audio openness up
+in a per-frame map, while the desktop **sweeps** the talk range back and forth
+±1 frame per tick and lets the audio envelope shorten the per-frame *delay*.
+Louder speech sweeps faster. The talk range in the source footage is itself an
+open-close mouth cycle, so a faster sweep is a busier mouth. The openness map is
+consulted only to find the closed-mouth frame during silence.
+
+- `src/lip-sync/dsp.js` — `LipSyncDsp`: EMA smoothing, decaying-peak AGC, and a
+  voicing gate with hysteresis (60 ms to open, 180 ms to close).
+- `src/lip-sync/animator.js` — `LipAnimator` + `findClosedFrame`: the boost,
+  the asymmetric attack/release envelope, sustain (held-vowel) detection, and
+  the three frame branches (sustain / silence / voiced sweep).
+- Both are exported from the package root so the player runtime bundle and the
+  non-React wrappers share ONE implementation instead of each re-porting it.
+
+Every constant is expressed as a **time** constant and re-derived from `dt` on
+each call, not baked in per tick. The desktop is fed one audio block every 30 ms;
+the web is polled from `requestAnimationFrame`, which is 60 Hz on most machines,
+120 Hz on a high-refresh display and 0 Hz in a background tab. Per-tick
+constants would make the avatar animate differently on different hardware — a
+bug whose hidden variable is the reporter's monitor.
+
+Neither module reads a clock or a random number: `dtMs` is injected. That is why
+they are testable under plain `node`, and three suites (69 assertions) cover the
+half-lives, the gate timing, the ±1 frame invariant, and the fact that the
+residual error between 30/60/120 Hz *converges* as the tick rate rises — which
+is what distinguishes real discretisation error from a constant that is still
+secretly per-tick.
+
+Not yet wired into any component; that lands with the runtime bundle.
+
+## [1.12.1]
+
+### Added — `extraPayload`: constant fields the host merges into every webhook POST
+A host that vendors the widget often has to tell its backend something the
+widget cannot know — which tenant, which route, which campaign. Until now the
+only way in was `formatRequest`, which means reimplementing the whole body
+(`message`, `attachments`, `availableActions`, the flow metadata) just to add
+one field. `tio-marco` patched its vendored copy to do exactly that, and the
+distributor's `rmtree`+`copytree` would have deleted the patch on the next sync.
+The prop now lives upstream.
+
+- `extraPayload` (default `null`) on `<AvatarChatbot>` and `useChatbot`. Its
+  fields are merged **first** into the request body, so `message`,
+  `attachments`, `availableActions` and the flow metadata
+  (`sessionId`/`collected`/`escalate`) can never be clobbered by host config.
+- With a custom `formatRequest`, the same fields are merged into the metadata
+  object handed to it — again first, behind `metadata`.
+- Omitted (or `null`), the outgoing body is byte-for-byte what it was before.
+- Typed in `index.d.ts` on both `AvatarChatbotProps` and the `useChatbot`
+  options.
+
 ## [1.12.0]
 
 ### Added — lip sync configs are pulled from the server automatically (best one wins)

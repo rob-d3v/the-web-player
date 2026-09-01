@@ -188,6 +188,30 @@ export const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } 
     return maxAmp;
   }, [kickResume]);
 
+  // RMS, not peak.
+  //
+  // `getAmplitude` above returns the PEAK sample of the window, which for
+  // speech is roughly 2-3x the RMS and jumps around far more between frames.
+  // The desktop player's voicing gate is calibrated in RMS (threshold 0.020),
+  // and feeding it a peak would make it trip on transients. RMS is also what
+  // the envelope should follow: it tracks perceived loudness rather than the
+  // single loudest sample in the buffer.
+  const getRms = useCallback(() => {
+    if (!analyserRef.current) return 0;
+    const ctx = audioContextRef.current;
+    if (ctx && ctx.state !== 'running') { kickResume(); return 0; }
+    const analyser = analyserRef.current;
+    const timeData = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(timeData);
+
+    let sumSquares = 0;
+    for (let i = 0; i < timeData.length; i++) {
+      const sample = (timeData[i] - 128) / 128;
+      sumSquares += sample * sample;
+    }
+    return Math.sqrt(sumSquares / timeData.length);
+  }, [kickResume]);
+
   const disconnect = useCallback(() => {
     if (sourceRef.current) {
       try { sourceRef.current.disconnect(); } catch (e) {}
@@ -220,6 +244,7 @@ export const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } 
     getSpectralOpenness,
     getSpectralFlux,
     getAmplitude,
+    getRms,
     disconnect,
     isConnected: () => !!connectedElementRef.current
   };

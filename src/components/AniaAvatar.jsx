@@ -3,9 +3,16 @@ import { useRef, useState, useEffect, useCallback, useMemo, forwardRef, useImper
 import { createPortal } from 'react-dom';
 import { Maximize2, Minimize2, X } from 'lucide-react';
 import { THEMES } from '../constants/themes.js';
+
+// How long to wait for the host page's `<script src=".../aniaplayer.min.js">` to
+// define `window.AniaPlayer` before declaring it absent. Generous: a cold cache
+// on a slow phone can take several seconds. Finite: it either loads or it does
+// not, and a widget that waits forever is a widget that never reports the fault.
+const PLAYER_WAIT_TICK_MS = 100;
+const PLAYER_WAIT_TIMEOUT_MS = 15000;
 import { createTranslator } from '../i18n/index.js';
 import { decryptAniaFile, isPlainMarketAnia, inspectAvatarFrames } from '../utils/crypto.js';
-import { calculateOptimalSpeeds } from '../utils/speed-calculator.js';
+import { resolveNativeFps, frameIntervalMs, normalizeFpsClamp } from '../utils/frame-rate.js';
 import { getCachedAvatar, setCachedAvatar, deleteCachedAvatar } from '../utils/avatar-cache.js';
 import {
   fetchLipSyncConfigById,
@@ -14,6 +21,15 @@ import {
   buildOpennessMap,
   DEFAULT_LIP_SYNC_SERVER_URL
 } from '../services/lip-sync-api.js';
+
+// Deprecation notices fire from a render/effect path, so they have to be
+// de-duplicated or they scroll the host's console on every frame.
+const warnedOnce = new Set();
+const warnDeprecated = (key, message) => {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.warn(`[AniaAvatar] ${message}`);
+};
 
 // forwardRef: useAniaAvatarRef expects `ref.current.playerRef` — without the
 // wrapper, React strips `ref` from function components and the hook's
@@ -36,11 +52,21 @@ const AniaAvatarPlayer = forwardRef(({
   minimizable = true,
   closable = true,
   detectAudio = false,
-  // undefined = host did not set it → the file's authored speed (or the fps
-  // heuristic) wins. A number = explicit host override that beats both.
+  // undefined = host did not set it → the file's authored speed wins.
+  // A number = explicit host override that beats it.
+  //
+  // NOTE these are multipliers RELATIVE to the footage's own frame rate, and
+  // the result is held inside `fpsClamp`. They used to be absolute divisors
+  // against a duration authored in the .ania, which is how `idleSpeed={6.4}`
+  // — the preset most consumer apps copied — ended up playing at 128 fps.
   idleSpeed = undefined,
   talkSpeed = undefined,
   autoCalculateSpeed = true,
+  // Playback is held to 24-30 fps by default so every avatar is consistent
+  // regardless of what its .ania was authored at or what speed the host asks
+  // for. `false` disables it (full legacy behaviour); `{min, max}` sets a
+  // custom window.
+  fpsClamp = undefined,
   startMinimized = false,
   preserveQuality = true,
   /**
@@ -70,7 +96,9 @@ const AniaAvatarPlayer = forwardRef(({
   draggable = true,
   mobileBreakpoint = 768,
   // Lip sync props
-  lipSyncEnabled = false,
+  // Default ON since 1.13.0. The sweep model works fully without any openness
+  // map — branch C never consults one — so this costs nothing and no network.
+  lipSyncEnabled = true,
   // Origem da API que guarda as configs de lip sync enviadas pelos criadores.
   // null = usa a mesma origem padrão do player desktop
   // (DEFAULT_LIP_SYNC_SERVER_URL). Aponte para um proxy próprio se preferir.
@@ -79,7 +107,12 @@ const AniaAvatarPlayer = forwardRef(({
   // contentHash do avatar) e aplica a MELHOR que encontrar — o mesmo que o
   // desktop faz ao abrir o arquivo, só que sem lista para o usuário escolher.
   // false = só usa o que veio dentro do .ania e as props.
-  lipSyncAutoFetch = true,
+  // Default OFF since 1.13.0, deliberately paired with lipSyncEnabled going ON.
+  // Leaving BOTH on would make every host page issue a third-party request to
+  // the lip sync server on mount: a CSP break, a privacy-notice item, and a new
+  // hard dependency in the first-paint path. Not an acceptable side effect of a
+  // rendering fix. Maps authored into the .ania still work with zero network.
+  lipSyncAutoFetch = false,
   // Fixa uma config específica (id do /json-config/list) e pula a escolha
   // automática — útil para travar a versão que você já validou.
   lipSyncConfigId = null,
@@ -108,6 +141,12 @@ const AniaAvatarPlayer = forwardRef(({
   lipSyncAudioRef = null,
   lipSyncHook = null,
   onLoad,
+  // Fired when the avatar cannot be shown at all: the runtime never arrived,
+  // the .ania failed to load, or its frames are unusable. A host needs this to
+  // keep working without a face — `AvatarChatbot` uses it to open the chat
+  // anyway, which it otherwise never would, because it stays minimised until
+  // the avatar reports loaded and a dead avatar never reports anything.
+  onError,
   onTalkStart,
   onTalkEnd,
   onClose,
@@ -397,6 +436,7 @@ const AniaAvatarPlayer = forwardRef(({
       if (!window.AniaPlayer) {
         console.error('[AniaAvatar] AniaPlayer not loaded on window');
         setError(tr.t("avatar.error.playerNotLoaded"));
+        if (onError) onError(new Error("AniaPlayer runtime not available"));
         return;
       }
       if (!containerRef.current) {
@@ -484,22 +524,52 @@ const AniaAvatarPlayer = forwardRef(({
           throw new Error(message);
         }
 
-        const detectedFps = (_c = avatarData.video) == null ? void 0 : _c.fps;
+        // What the footage actually IS. Everything downstream is relative to
+        // this rather than to a duration baked into the file, which is what
+        // makes a given speed value mean the same thing on every avatar.
+        const { fps: nativeFps, source: fpsSource } = resolveNativeFps(avatarData);
+        const clampCfg = normalizeFpsClamp(fpsClamp);
+
+        if (detectAudio) {
+          warnDeprecated(
+            'detectAudio',
+            'detectAudio is deprecated and has never worked. Its analyser was created ' +
+              'but no audio source was ever connected to it, so getByteFrequencyData ' +
+              'always read zeros and the mouth never opened. Use lipSyncEnabled (now on ' +
+              'by default) instead.'
+          );
+        }
+        if (lipSyncAudioRef) {
+          warnDeprecated(
+            'lipSyncAudioRef',
+            'lipSyncAudioRef is accepted but has never been read. Pass lipSyncHook, or ' +
+              'let <AvatarChatbot> wire the analyser for you.'
+          );
+        }
+        if (autoCalculateSpeed === false) {
+          warnDeprecated(
+            'autoCalculateSpeed',
+            'autoCalculateSpeed is deprecated and ignored. It disabled an fps→multiplier ' +
+              'heuristic that no longer exists: playback is now derived from the .ania\'s real ' +
+              'frame rate and held inside fpsClamp (24-30 fps by default). Use fpsClamp instead.'
+          );
+        }
 
         // Speed precedence (lowest → highest):
-        //   1 (baseline) < fps heuristic < .ania authored speed < explicit host prop.
-        // The fps heuristic and the file's authored speeds carry the creator's
-        // intent for hosts that DON'T set a speed. But an explicit host prop
-        // (e.g. the AvatarConfigurator's Idle/Talk speed sliders) is a
-        // deliberate override and must win — previously the file clobbered it,
-        // so changing idleSpeed/talkSpeed in the configurator did nothing.
+        //   1 (play as shot) < .ania authored speed < explicit host prop.
+        // The file's authored speeds carry the creator's intent for hosts that
+        // DON'T set a speed. An explicit host prop (e.g. the
+        // AvatarConfigurator's sliders) is a deliberate override and must win —
+        // previously the file clobbered it, so changing idleSpeed/talkSpeed in
+        // the configurator did nothing.
+        //
+        // The old fps→multiplier heuristic (`calculateOptimalSpeeds`, fps/10
+        // and fps/5) used to sit between those two tiers. It is gone: it
+        // produced a dimensionless number that was then used as a divisor
+        // against a millisecond duration, which is how playback ended up
+        // anywhere between 56 and 128 fps depending on the app.
         let finalIdleSpeed = 1;
         let finalTalkSpeed = 1;
-        if (autoCalculateSpeed && detectedFps) {
-          const optimalSpeeds = calculateOptimalSpeeds(detectedFps);
-          finalIdleSpeed = optimalSpeeds.idle;
-          finalTalkSpeed = optimalSpeeds.talk;
-        }
         const fileAnim = avatarData.animation || {};
         if (typeof fileAnim.idleSpeedSliderValue === 'number' && fileAnim.idleSpeedSliderValue > 0) {
           finalIdleSpeed = fileAnim.idleSpeedSliderValue;
@@ -509,6 +579,28 @@ const AniaAvatarPlayer = forwardRef(({
         }
         if (typeof idleSpeed === 'number' && idleSpeed > 0) finalIdleSpeed = idleSpeed;
         if (typeof talkSpeed === 'number' && talkSpeed > 0) finalTalkSpeed = talkSpeed;
+
+        // Fold the speeds into real millisecond intervals here, clamped. Two
+        // reasons to do it on this side rather than leaving it all to the
+        // runtime: the ten consumer apps the distributor does not know about
+        // will never receive an updated aniaplayer.min.js, and an OLD runtime
+        // handed an fps-correct duration with a neutral slider computes
+        // `duration / 1 / 1` — i.e. exactly the right answer, with no update.
+        const idleIntervalMs = frameIntervalMs({
+          nativeFps,
+          speed: finalIdleSpeed,
+          clamp: clampCfg
+        });
+        const talkIntervalMs = frameIntervalMs({
+          nativeFps,
+          speed: finalTalkSpeed,
+          clamp: clampCfg
+        });
+        console.log(
+          `[AniaAvatar] fps ${nativeFps.toFixed(2)} (${fpsSource}) → idle ` +
+            `${(1000 / idleIntervalMs).toFixed(1)}fps / talk ${(1000 / talkIntervalMs).toFixed(1)}fps` +
+            (clampCfg ? ` [clamped ${clampCfg.min}-${clampCfg.max}]` : ' [unclamped]')
+        );
 
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
 
@@ -586,17 +678,27 @@ const AniaAvatarPlayer = forwardRef(({
           is_transitioning: false,
           reverse_idle_selected: avatarData.animation.reverseIdleSelected || false,
           reverse_talk_selected: avatarData.animation.reverseTalkSelected || false,
-          idle_speed_slider_value: finalIdleSpeed,
-          talk_speed_slider_value: finalTalkSpeed,
+          // Neutral on purpose: the speed multipliers are already folded into
+          // idle_frame_duration / talk_cycle_duration below. Passing them here
+          // as well would apply them TWICE (the runtime divides the duration by
+          // this slider), which is the 128 fps bug all over again.
+          idle_speed_slider_value: 1,
+          talk_speed_slider_value: 1,
           transition_speed_slider_value: avatarData.animation.transitionSpeedSliderValue || 0,
           idle_start_positions: avatarData.animation.idleStartPositions || [],
           talk_start_positions: avatarData.animation.talkStartPositions || []
         };
         const configState = {
           ...avatarData.config,
-          idle_frame_duration: avatarData.config.idleFrameDuration || 50,
-          talk_cycle_duration: avatarData.config.talkCycleDuration || 50,
-          transition_duration: avatarData.config.transitionDuration || 10
+          idle_frame_duration: idleIntervalMs,
+          talk_cycle_duration: talkIntervalMs,
+          transition_duration: avatarData.config.transitionDuration || 10,
+          // Read by the updated runtime's getFrameDuration override, so live
+          // setIdleSpeed/setTalkSpeed calls get re-clamped too. An older
+          // runtime ignores these and still plays correctly, because the two
+          // durations above are already right.
+          ania_native_fps: nativeFps,
+          ania_fps_clamp: clampCfg
         };
         const AnimationController = window.AniaPlayer.AnimationController;
         player.animationController = new AnimationController(
@@ -755,6 +857,12 @@ const AniaAvatarPlayer = forwardRef(({
         // Wire lip sync audio callbacks if provided
         if (lipSyncHook && player.animationController) {
           const ctrl = player.animationController;
+          // getRmsFn is what the voicing gate reads: its 0.020 threshold is
+          // calibrated in RMS, and a peak reading (getAmplitude) is 2-3x higher
+          // for speech and would trip the gate on transients. Older runtimes
+          // don't look for it and fall back to getAmplitudeFn, so setting all
+          // of them keeps a stale aniaplayer.min.js working.
+          ctrl.getRmsFn = lipSyncHook.getRms;
           ctrl.getAmplitudeFn = lipSyncHook.getAmplitude;
           ctrl.getSpectralOpennessFn = lipSyncHook.getSpectralOpenness;
           ctrl.getSpectralFluxFn = lipSyncHook.getSpectralFlux;
@@ -788,6 +896,7 @@ const AniaAvatarPlayer = forwardRef(({
       } catch (err) {
         console.error("[AniaAvatar] Error loading avatar:", err);
         setError(tr.t("avatar.error.loadFailed", { error: (err && err.message ? err.message : String(err)) }));
+        if (onError) onError(err instanceof Error ? err : new Error(String(err)));
         isLoadingRef.current = false;
       }
     };
@@ -796,13 +905,37 @@ const AniaAvatarPlayer = forwardRef(({
       loadAvatar();
     } else {
       console.log('[AniaAvatar] Waiting for AniaPlayer script...');
+      // This wait used to be unbounded, and it never set `error`. When a host
+      // page ships no `/player/aniaplayer.min.js` — which two apps in the fleet
+      // genuinely do not — the widget polled every 100 ms forever and rendered
+      // "Carregando avatar..." for the life of the tab. Worse, `isAvatarLoaded`
+      // stayed false, so `AvatarChatbot` kept the widget minimised and the chat,
+      // which works perfectly well with no avatar at all, could not be opened.
+      //
+      // A missing global is not a slow global: the script tag either resolves or
+      // it does not. Give it a real window, then call it what it is, so the
+      // failure path (which does un-minimise) can run.
+      let waited = 0;
       const checkInterval = setInterval(() => {
         if (window.AniaPlayer) {
           console.log('[AniaAvatar] AniaPlayer found after wait!');
           clearInterval(checkInterval);
           loadAvatar();
+          return;
         }
-      }, 100);
+        waited += PLAYER_WAIT_TICK_MS;
+        if (waited >= PLAYER_WAIT_TIMEOUT_MS) {
+          clearInterval(checkInterval);
+          console.error(
+            '[AniaAvatar] window.AniaPlayer never appeared after ' +
+            (PLAYER_WAIT_TIMEOUT_MS / 1000) + 's. Is <script src=".../aniaplayer.min.js"> ' +
+            'present on the host page and returning 200?'
+          );
+          isLoadingRef.current = false;
+          setError(tr.t("avatar.error.playerNotLoaded"));
+          if (onError) onError(new Error("AniaPlayer runtime not available"));
+        }
+      }, PLAYER_WAIT_TICK_MS);
       return () => clearInterval(checkInterval);
     }
     return () => {
@@ -1014,7 +1147,16 @@ const AniaAvatarPlayer = forwardRef(({
       // makes the chat look broken). Own stack, own base color.
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
       ...(!inline && !(dragPosition && isMinimized) ? positionStyles[position] : {}),
-      ...(isMobileSheet ? { left: '8px', right: '8px', bottom: '8px', top: 'auto' } : {}),
+      // The bottom inset has to clear the home indicator / gesture bar, or the
+      // input row sits underneath it on an iPhone.
+      ...(isMobileSheet
+        ? {
+            left: '8px',
+            right: '8px',
+            bottom: 'calc(8px + env(safe-area-inset-bottom, 0px))',
+            top: 'auto'
+          }
+        : {}),
       ...(isMobileMinimized ? {
         borderRadius: '9999px',
         overflow: 'hidden',
@@ -1022,10 +1164,15 @@ const AniaAvatarPlayer = forwardRef(({
       } : {}),
       width: isMobileSheet
         ? 'auto'
-        : (isMinimized ? `${currentWidth}px` : `min(${currentWidth}px, calc(100vw - 24px))`),
+        : (isMinimized ? `${currentWidth}px` : `min(${currentWidth}px, calc(100dvw - 24px))`),
       height: children ? "auto" : `${currentHeight}px`,
-      maxWidth: isMinimized ? undefined : "calc(100vw - 24px)",
-      maxHeight: isMobileMinimized ? "none" : (isMobileSheet ? "calc(100vh - 16px)" : "calc(100vh - 24px)"),
+      maxWidth: isMinimized ? undefined : "calc(100dvw - 24px)",
+      // `dvh`: the dynamic viewport, which shrinks as the browser's own chrome
+      // appears. `vh` is the LARGE viewport and counts space that is not there.
+      // Both branches now subtract the same 24px — the old `-16` on the sheet
+      // never had any effect anyway, because the inner card's own maxHeight
+      // (`:1177`) is the tighter of the two and always won.
+      maxHeight: isMobileMinimized ? "none" : "calc(100dvh - 24px)",
       pointerEvents: "auto",
       zIndex: alwaysOnTop ? 2147483647 : 9999,
       display: "flex",
@@ -1080,7 +1227,10 @@ const AniaAvatarPlayer = forwardRef(({
             width: '100%',
             display: "flex",
             flexDirection: "column",
-            maxHeight: isMobileMinimized ? undefined : "calc(100vh - 24px)",
+            // The outer shell above already clamps to the viewport; matching it
+            // here with a second, differently-written copy of the same number is
+            // how the two drifted apart. Fill the parent instead.
+            maxHeight: isMobileMinimized ? undefined : "100%",
             overflow: (!transparent || !isMobileMinimized) ? 'hidden' : undefined,
             ...(
               !transparent ? {
@@ -1165,11 +1315,27 @@ const AniaAvatarPlayer = forwardRef(({
                   width: isMobileMinimized ? `${currentWidth}px` : '100%',
                   // On a phone with the chat open, cap the avatar stage so the
                   // conversation (not the canvas) owns the screen.
-                  height: (isMobile && !isMinimized && children)
-                    ? `min(${currentHeight}px, 34vh)`
-                    : `${currentHeight}px`,
+                  //
+                  // The cap alone was not enough. With `flexShrink: 0` the stage
+                  // never gave up a pixel, and since the input bar, the flow
+                  // region and the error toast were rigid too, the transcript
+                  // was the only block that could yield — so it took the entire
+                  // squeeze and collapsed. Measured at 478x826: stage 281px,
+                  // transcript 168px. Letting the stage shrink is what gives the
+                  // conversation room back; the min keeps the face recognisable.
+                  //
+                  // `dvh` rather than `vh`: on mobile `vh` resolves to the LARGE
+                  // viewport, which includes the space behind the browser's URL
+                  // bar. At 826px visible the page reports 950, and 34vh of the
+                  // wrong number is how the input row ended up under the chrome.
+                  ...((isMobile && !isMinimized && children)
+                    ? {
+                        flex: "1 1 auto",
+                        maxHeight: `min(${currentHeight}px, 34dvh)`,
+                        minHeight: "min(160px, 20dvh)"
+                      }
+                    : { height: `${currentHeight}px`, flexShrink: 0 }),
                   maxWidth: "100%",
-                  flexShrink: 0,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',

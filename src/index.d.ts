@@ -65,9 +65,29 @@ export interface AniaAvatarProps {
    * keys (`'greetings'`, `'waiting'`) take a `string[]`. Anything not provided
    * resolves from the `locale` table. */
   messagesOverride?: MessagesOverride;
+  /** Playback speed multiplier RELATIVE to the .ania's own frame rate; the
+   * result is held inside `fpsClamp`. 1 = play the footage as shot. */
   idleSpeed?: number;
+  /** @see idleSpeed */
   talkSpeed?: number;
+  /** @deprecated Ignored since 1.13.0, and warns once. It used to disable an
+   * fps→multiplier heuristic that no longer exists. Use `fpsClamp`. */
   autoCalculateSpeed?: boolean;
+  /** Bounds playback to a frame-rate window so every avatar is consistent no
+   * matter what its `.ania` was authored at or what speed the host asks for.
+   *
+   * Defaults to 24-30 fps. `false` disables clamping entirely (the pre-1.13
+   * behaviour, where an `idleSpeed` of 6.4 against a 50 ms authored duration
+   * played at ~128 fps). An object sets a custom window. */
+  fpsClamp?: boolean | { min: number; max: number };
+  /** Send a stable per-browser id with every chat request so the backend can
+   * keep visitors' conversations apart. Default `true`.
+   *
+   * It is a persistent cross-session identifier and belongs in the host's
+   * privacy notice. `false` disables it — the backend then cannot tell visitors
+   * apart and may merge their conversations. `navigator.globalPrivacyControl`
+   * is honoured automatically by downgrading to a per-tab id. */
+  deviceIdEnabled?: boolean;
   startMinimized?: boolean;
   preserveQuality?: boolean;
   /**
@@ -188,6 +208,14 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   // n8n/webhook authentication
   webhookApiKey?: string;
   webhookHeaders?: Record<string, string>;
+  /**
+   * Constant fields merged into EVERY webhook POST body — how the host tells
+   * the backend something the widget cannot know (tenant, route context,
+   * campaign). Merged FIRST, so it never overwrites `message`, `attachments`
+   * or the flow metadata (`sessionId`/`collected`/`escalate`). Omit (or
+   * `null`) and the request body is exactly what it was before.
+   */
+  extraPayload?: Record<string, any> | null;
   /**
    * Client-side responder override. When set, the chat calls this instead of
    * POSTing to `webhookUrl` — receives (message, metadata) and returns the reply
@@ -317,6 +345,8 @@ export interface UseChatbotOptions {
    * reply as a string or `{ message|content|text, attachments?, action? }`.
    */
   onSendMessage?: (message: string, metadata: any) => string | ChatResponsePayload | Promise<string | ChatResponsePayload>;
+  /** Constant fields merged into every POST body. Merged first — see AvatarChatbotProps.extraPayload. */
+  extraPayload?: Record<string, any> | null;
   onResponse?: (message: ChatMessage, data: any) => void;
   onError?: (error: Error, friendlyMessage: string) => void;
   formatRequest?: (message: string, metadata: any) => any;
@@ -1086,3 +1116,7 @@ export function installPostMessageControl(
   ctx: CommandContext,
   options?: { origins?: string[]; onResult?: (result: CommandResult, event: MessageEvent) => void }
 ): () => void;
+
+export declare const DEVICE_ID_KEY: string;
+export declare function getDeviceId(options?: { enabled?: boolean; key?: string }): string;
+export declare function resetDeviceId(options?: { key?: string }): string;

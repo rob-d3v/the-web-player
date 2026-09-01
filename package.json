@@ -1,6 +1,6 @@
 {
   "name": "ania-avatar-react",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "React component library for ANIA Avatar with TTS, STT, and chatbot integration",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -21,8 +21,12 @@
     "dev": "vite",
     "build": "vite build",
     "postbuild": "node scripts/sync-after-build.mjs",
+    "build:local": "node scripts/build-local.mjs",
+    "build:runtime": "node player-runtime/build.mjs",
+    "verify:runtime": "node player-runtime/verify.mjs",
+    "harness:runtime": "node player-runtime/harness.mjs",
     "preview": "vite preview",
-    "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs && node examples/test-lip-sync-picker.mjs",
+    "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs && node examples/test-lip-sync-picker.mjs && node examples/test-frame-rate.mjs && node examples/test-lip-dsp.mjs && node examples/test-lip-animator.mjs && node examples/test-openness-map.mjs && node examples/test-device-id.mjs",
     "test:tts": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs",
     "prepublishOnly": "npm run build"
   },

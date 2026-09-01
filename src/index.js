@@ -37,6 +37,10 @@ export {
   buildOpennessMap,
   DEFAULT_LIP_SYNC_SERVER_URL
 } from './services/lip-sync-api.js';
+// Lip sync DSP + frame animator. Exported so the player runtime bundle and the
+// non-React wrappers (vue/svelte/angular/wc) share ONE implementation of the
+// algorithm instead of each re-porting it from the desktop player.
+export { LipSyncDsp, LipAnimator, findClosedFrame } from './lip-sync/index.js';
 export { WakeWordEngine, getWakeWordEngine, isWakeWordSupported } from './services/wake-word.js';
 
 // Plugin architecture
@@ -72,6 +76,7 @@ export {
 } from './i18n/index.js';
 
 // Utilities
+export { getDeviceId, resetDeviceId, DEVICE_ID_KEY } from './utils/device-id.js';
 export { parseHotkey, matchesHotkey } from './utils/hotkey-parser.js';
 export { playActionAudio } from './utils/action-renderer.js';
 export { executeCommand, parseCommandLine, installPostMessageControl, COMMAND_LIST } from './utils/commands.js';

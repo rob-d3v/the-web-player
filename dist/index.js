@@ -12174,16 +12174,67 @@ async function decryptAniaFile(encryptedData, password) {
     throw err;
   }
 }
-const calculateOptimalSpeeds = (fps) => {
-  if (!fps || fps <= 0) {
-    return { idle: 1, talk: 1 };
+const FPS_CLAMP_DEFAULT = { min: 24, max: 30 };
+const FPS_FALLBACK = 25;
+const LEGACY_DURATION_SENTINEL = 50;
+const isPositiveFinite = (v) => Number.isFinite(v) && v > 0;
+const normalizeFpsClamp = (fpsClamp) => {
+  if (fpsClamp === false) return null;
+  if (fpsClamp === void 0 || fpsClamp === null || fpsClamp === true) {
+    return { ...FPS_CLAMP_DEFAULT };
   }
-  const idleSpeed = Math.max(0.5, Math.min(10, fps / 10));
-  const talkSpeed = Math.max(1, Math.min(10, fps / 5));
-  return {
-    idle: parseFloat(idleSpeed.toFixed(1)),
-    talk: parseFloat(talkSpeed.toFixed(1))
-  };
+  if (typeof fpsClamp === "object") {
+    const min2 = Number(fpsClamp.min);
+    const max = Number(fpsClamp.max);
+    if (isPositiveFinite(min2) && isPositiveFinite(max) && min2 <= max && max <= 120) {
+      return { min: min2, max };
+    }
+    console.warn(
+      "[AniaAvatar] fpsClamp must be {min, max} with 0 < min <= max <= 120; falling back to the default 24-30 fps window. Got:",
+      fpsClamp
+    );
+  }
+  return { ...FPS_CLAMP_DEFAULT };
+};
+const resolveNativeFps = (avatarData) => {
+  const data = avatarData || {};
+  const video = data.video || {};
+  const config = data.config || {};
+  const declared = Number(video.fps);
+  if (isPositiveFinite(declared) && declared <= 240) {
+    return { fps: declared, source: "video.fps" };
+  }
+  const idleMs = Number(config.idleFrameDuration);
+  if (isPositiveFinite(idleMs) && idleMs !== LEGACY_DURATION_SENTINEL) {
+    const derived = 1e3 / idleMs;
+    if (derived >= 8 && derived <= 120) {
+      return { fps: derived, source: "config.idleFrameDuration" };
+    }
+  }
+  const frameCount = Array.isArray(video.frames) ? video.frames.length : Number(video.frameCount);
+  const duration = Number(video.duration);
+  if (isPositiveFinite(frameCount) && frameCount > 1 && isPositiveFinite(duration) && duration > 0.5) {
+    const derived = frameCount / duration;
+    if (derived >= 8 && derived <= 120) {
+      return { fps: derived, source: "frames/duration" };
+    }
+  }
+  return { fps: FPS_FALLBACK, source: "fallback" };
+};
+const frameIntervalMs = ({
+  nativeFps,
+  speed = 1,
+  playbackSpeed = 1,
+  clamp: clamp2 = FPS_CLAMP_DEFAULT
+} = {}) => {
+  const fps = isPositiveFinite(nativeFps) ? nativeFps : FPS_FALLBACK;
+  const s = isPositiveFinite(speed) ? speed : 1;
+  const ps2 = isPositiveFinite(playbackSpeed) ? playbackSpeed : 1;
+  const raw = 1e3 / fps / s / ps2;
+  if (!clamp2) return raw;
+  const minMs = 1e3 / clamp2.max;
+  const maxMs = 1e3 / clamp2.min;
+  return Math.max(minMs, Math.min(maxMs, raw));
 };
 const DB_NAME = "ania-avatar-cache";
 const DB_VERSION = 1;
@@ -12535,6 +12586,14 @@ const buildOpennessMap = (keyframes, talkLow, talkHigh) => {
   }
   return result;
 };
+const PLAYER_WAIT_TICK_MS = 100;
+const PLAYER_WAIT_TIMEOUT_MS = 15e3;
+const warnedOnce = /* @__PURE__ */ new Set();
+const warnDeprecated = (key, message) => {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  console.warn(`[AniaAvatar] ${message}`);
+};
 const AniaAvatarPlayer = forwardRef(({
   avatarUrl,
   avatarPassword,
@@ -12553,11 +12612,21 @@ const AniaAvatarPlayer = forwardRef(({
   minimizable = true,
   closable = true,
   detectAudio = false,
-  // undefined = host did not set it → the file's authored speed (or the fps
-  // heuristic) wins. A number = explicit host override that beats both.
+  // undefined = host did not set it → the file's authored speed wins.
+  // A number = explicit host override that beats it.
+  //
+  // NOTE these are multipliers RELATIVE to the footage's own frame rate, and
+  // the result is held inside `fpsClamp`. They used to be absolute divisors
+  // against a duration authored in the .ania, which is how `idleSpeed={6.4}`
+  // — the preset most consumer apps copied — ended up playing at 128 fps.
   idleSpeed = void 0,
   talkSpeed = void 0,
   autoCalculateSpeed = true,
+  // Playback is held to 24-30 fps by default so every avatar is consistent
+  // regardless of what its .ania was authored at or what speed the host asks
+  // for. `false` disables it (full legacy behaviour); `{min, max}` sets a
+  // custom window.
+  fpsClamp = void 0,
   startMinimized = false,
   preserveQuality = true,
   /**
@@ -12587,7 +12656,9 @@ const AniaAvatarPlayer = forwardRef(({
   draggable = true,
   mobileBreakpoint = 768,
   // Lip sync props
-  lipSyncEnabled = false,
+  // Default ON since 1.13.0. The sweep model works fully without any openness
+  // map — branch C never consults one — so this costs nothing and no network.
+  lipSyncEnabled = true,
   // Origem da API que guarda as configs de lip sync enviadas pelos criadores.
   // null = usa a mesma origem padrão do player desktop
   // (DEFAULT_LIP_SYNC_SERVER_URL). Aponte para um proxy próprio se preferir.
@@ -12596,7 +12667,12 @@ const AniaAvatarPlayer = forwardRef(({
   // contentHash do avatar) e aplica a MELHOR que encontrar — o mesmo que o
   // desktop faz ao abrir o arquivo, só que sem lista para o usuário escolher.
   // false = só usa o que veio dentro do .ania e as props.
-  lipSyncAutoFetch = true,
+  // Default OFF since 1.13.0, deliberately paired with lipSyncEnabled going ON.
+  // Leaving BOTH on would make every host page issue a third-party request to
+  // the lip sync server on mount: a CSP break, a privacy-notice item, and a new
+  // hard dependency in the first-paint path. Not an acceptable side effect of a
+  // rendering fix. Maps authored into the .ania still work with zero network.
+  lipSyncAutoFetch = false,
   // Fixa uma config específica (id do /json-config/list) e pula a escolha
   // automática — útil para travar a versão que você já validou.
   lipSyncConfigId = null,
@@ -12625,6 +12701,12 @@ const AniaAvatarPlayer = forwardRef(({
   lipSyncAudioRef = null,
   lipSyncHook = null,
   onLoad,
+  // Fired when the avatar cannot be shown at all: the runtime never arrived,
+  // the .ania failed to load, or its frames are unusable. A host needs this to
+  // keep working without a face — `AvatarChatbot` uses it to open the chat
+  // anyway, which it otherwise never would, because it stays minimised until
+  // the avatar reports loaded and a dead avatar never reports anything.
+  onError,
   onTalkStart,
   onTalkEnd,
   onClose,
@@ -12858,7 +12940,6 @@ const AniaAvatarPlayer = forwardRef(({
   }, [isTalking, isLoaded, detectAudio]);
   useEffect(() => {
     const loadAvatar = async () => {
-      var _c;
       console.log("[AniaAvatar] loadAvatar called", { isLoading: isLoadingRef.current, hasAniaPlayer: !!window.AniaPlayer, hasContainer: !!containerRef.current, hasPlayer: !!playerRef.current });
       if (isLoadingRef.current) {
         console.log("[AniaAvatar] Already loading, skipping");
@@ -12867,6 +12948,7 @@ const AniaAvatarPlayer = forwardRef(({
       if (!window.AniaPlayer) {
         console.error("[AniaAvatar] AniaPlayer not loaded on window");
         setError(tr2.t("avatar.error.playerNotLoaded"));
+        if (onError) onError(new Error("AniaPlayer runtime not available"));
         return;
       }
       if (!containerRef.current) {
@@ -12934,14 +13016,28 @@ const AniaAvatarPlayer = forwardRef(({
           });
           throw new Error(message);
         }
-        const detectedFps = (_c = avatarData.video) == null ? void 0 : _c.fps;
+        const { fps: nativeFps, source: fpsSource } = resolveNativeFps(avatarData);
+        const clampCfg = normalizeFpsClamp(fpsClamp);
+        if (detectAudio) {
+          warnDeprecated(
+            "detectAudio",
+            "detectAudio is deprecated and has never worked. Its analyser was created but no audio source was ever connected to it, so getByteFrequencyData always read zeros and the mouth never opened. Use lipSyncEnabled (now on by default) instead."
+          );
+        }
+        if (lipSyncAudioRef) {
+          warnDeprecated(
+            "lipSyncAudioRef",
+            "lipSyncAudioRef is accepted but has never been read. Pass lipSyncHook, or let <AvatarChatbot> wire the analyser for you."
+          );
+        }
+        if (autoCalculateSpeed === false) {
+          warnDeprecated(
+            "autoCalculateSpeed",
+            "autoCalculateSpeed is deprecated and ignored. It disabled an fps→multiplier heuristic that no longer exists: playback is now derived from the .ania's real frame rate and held inside fpsClamp (24-30 fps by default). Use fpsClamp instead."
+          );
+        }
         let finalIdleSpeed = 1;
         let finalTalkSpeed = 1;
-        if (autoCalculateSpeed && detectedFps) {
-          const optimalSpeeds = calculateOptimalSpeeds(detectedFps);
-          finalIdleSpeed = optimalSpeeds.idle;
-          finalTalkSpeed = optimalSpeeds.talk;
-        }
         const fileAnim = avatarData.animation || {};
         if (typeof fileAnim.idleSpeedSliderValue === "number" && fileAnim.idleSpeedSliderValue > 0) {
           finalIdleSpeed = fileAnim.idleSpeedSliderValue;
@@ -12951,6 +13047,19 @@ const AniaAvatarPlayer = forwardRef(({
         }
         if (typeof idleSpeed === "number" && idleSpeed > 0) finalIdleSpeed = idleSpeed;
         if (typeof talkSpeed === "number" && talkSpeed > 0) finalTalkSpeed = talkSpeed;
+        const idleIntervalMs = frameIntervalMs({
+          nativeFps,
+          speed: finalIdleSpeed,
+          clamp: clampCfg
+        });
+        const talkIntervalMs = frameIntervalMs({
+          nativeFps,
+          speed: finalTalkSpeed,
+          clamp: clampCfg
+        });
+        console.log(
+          `[AniaAvatar] fps ${nativeFps.toFixed(2)} (${fpsSource}) → idle ${(1e3 / idleIntervalMs).toFixed(1)}fps / talk ${(1e3 / talkIntervalMs).toFixed(1)}fps` + (clampCfg ? ` [clamped ${clampCfg.min}-${clampCfg.max}]` : " [unclamped]")
+        );
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
         let canvasWidth = width;
         let canvasHeight = height;
@@ -13011,17 +13120,27 @@ const AniaAvatarPlayer = forwardRef(({
           is_transitioning: false,
           reverse_idle_selected: avatarData.animation.reverseIdleSelected || false,
           reverse_talk_selected: avatarData.animation.reverseTalkSelected || false,
-          idle_speed_slider_value: finalIdleSpeed,
-          talk_speed_slider_value: finalTalkSpeed,
+          // Neutral on purpose: the speed multipliers are already folded into
+          // idle_frame_duration / talk_cycle_duration below. Passing them here
+          // as well would apply them TWICE (the runtime divides the duration by
+          // this slider), which is the 128 fps bug all over again.
+          idle_speed_slider_value: 1,
+          talk_speed_slider_value: 1,
           transition_speed_slider_value: avatarData.animation.transitionSpeedSliderValue || 0,
           idle_start_positions: avatarData.animation.idleStartPositions || [],
           talk_start_positions: avatarData.animation.talkStartPositions || []
         };
         const configState = {
           ...avatarData.config,
-          idle_frame_duration: avatarData.config.idleFrameDuration || 50,
-          talk_cycle_duration: avatarData.config.talkCycleDuration || 50,
-          transition_duration: avatarData.config.transitionDuration || 10
+          idle_frame_duration: idleIntervalMs,
+          talk_cycle_duration: talkIntervalMs,
+          transition_duration: avatarData.config.transitionDuration || 10,
+          // Read by the updated runtime's getFrameDuration override, so live
+          // setIdleSpeed/setTalkSpeed calls get re-clamped too. An older
+          // runtime ignores these and still plays correctly, because the two
+          // durations above are already right.
+          ania_native_fps: nativeFps,
+          ania_fps_clamp: clampCfg
         };
         const AnimationController = window.AniaPlayer.AnimationController;
         player.animationController = new AnimationController(
@@ -13119,6 +13238,7 @@ const AniaAvatarPlayer = forwardRef(({
         }
         if (lipSyncHook && player.animationController) {
           const ctrl = player.animationController;
+          ctrl.getRmsFn = lipSyncHook.getRms;
           ctrl.getAmplitudeFn = lipSyncHook.getAmplitude;
           ctrl.getSpectralOpennessFn = lipSyncHook.getSpectralOpenness;
           ctrl.getSpectralFluxFn = lipSyncHook.getSpectralFlux;
@@ -13149,6 +13269,7 @@ const AniaAvatarPlayer = forwardRef(({
       } catch (err) {
         console.error("[AniaAvatar] Error loading avatar:", err);
         setError(tr2.t("avatar.error.loadFailed", { error: err && err.message ? err.message : String(err) }));
+        if (onError) onError(err instanceof Error ? err : new Error(String(err)));
         isLoadingRef.current = false;
       }
     };
@@ -13157,13 +13278,25 @@ const AniaAvatarPlayer = forwardRef(({
       loadAvatar();
     } else {
       console.log("[AniaAvatar] Waiting for AniaPlayer script...");
+      let waited = 0;
       const checkInterval = setInterval(() => {
         if (window.AniaPlayer) {
           console.log("[AniaAvatar] AniaPlayer found after wait!");
           clearInterval(checkInterval);
           loadAvatar();
+          return;
         }
-      }, 100);
+        waited += PLAYER_WAIT_TICK_MS;
+        if (waited >= PLAYER_WAIT_TIMEOUT_MS) {
+          clearInterval(checkInterval);
+          console.error(
+            "[AniaAvatar] window.AniaPlayer never appeared after " + PLAYER_WAIT_TIMEOUT_MS / 1e3 + 's. Is <script src=".../aniaplayer.min.js"> present on the host page and returning 200?'
+          );
+          isLoadingRef.current = false;
+          setError(tr2.t("avatar.error.playerNotLoaded"));
+          if (onError) onError(new Error("AniaPlayer runtime not available"));
+        }
+      }, PLAYER_WAIT_TICK_MS);
       return () => clearInterval(checkInterval);
     }
     return () => {
@@ -13337,16 +13470,28 @@ const AniaAvatarPlayer = forwardRef(({
       // makes the chat look broken). Own stack, own base color.
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
       ...!inline && !(dragPosition && isMinimized) ? positionStyles[position] : {},
-      ...isMobileSheet ? { left: "8px", right: "8px", bottom: "8px", top: "auto" } : {},
+      // The bottom inset has to clear the home indicator / gesture bar, or the
+      // input row sits underneath it on an iPhone.
+      ...isMobileSheet ? {
+        left: "8px",
+        right: "8px",
+        bottom: "calc(8px + env(safe-area-inset-bottom, 0px))",
+        top: "auto"
+      } : {},
       ...isMobileMinimized ? {
         borderRadius: "9999px",
         overflow: "hidden",
         boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1)"
       } : {},
-      width: isMobileSheet ? "auto" : isMinimized ? `${currentWidth}px` : `min(${currentWidth}px, calc(100vw - 24px))`,
+      width: isMobileSheet ? "auto" : isMinimized ? `${currentWidth}px` : `min(${currentWidth}px, calc(100dvw - 24px))`,
       height: children ? "auto" : `${currentHeight}px`,
-      maxWidth: isMinimized ? void 0 : "calc(100vw - 24px)",
-      maxHeight: isMobileMinimized ? "none" : isMobileSheet ? "calc(100vh - 16px)" : "calc(100vh - 24px)",
+      maxWidth: isMinimized ? void 0 : "calc(100dvw - 24px)",
+      // `dvh`: the dynamic viewport, which shrinks as the browser's own chrome
+      // appears. `vh` is the LARGE viewport and counts space that is not there.
+      // Both branches now subtract the same 24px — the old `-16` on the sheet
+      // never had any effect anyway, because the inner card's own maxHeight
+      // (`:1177`) is the tighter of the two and always won.
+      maxHeight: isMobileMinimized ? "none" : "calc(100dvh - 24px)",
       pointerEvents: "auto",
       zIndex: alwaysOnTop ? 2147483647 : 9999,
       display: "flex",
@@ -13398,7 +13543,10 @@ const AniaAvatarPlayer = forwardRef(({
             width: "100%",
             display: "flex",
             flexDirection: "column",
-            maxHeight: isMobileMinimized ? void 0 : "calc(100vh - 24px)",
+            // The outer shell above already clamps to the viewport; matching it
+            // here with a second, differently-written copy of the same number is
+            // how the two drifted apart. Fill the parent instead.
+            maxHeight: isMobileMinimized ? void 0 : "100%",
             overflow: !transparent || !isMobileMinimized ? "hidden" : void 0,
             ...!transparent ? {
               background: currentTheme.background,
@@ -13481,9 +13629,25 @@ const AniaAvatarPlayer = forwardRef(({
                   width: isMobileMinimized ? `${currentWidth}px` : "100%",
                   // On a phone with the chat open, cap the avatar stage so the
                   // conversation (not the canvas) owns the screen.
-                  height: isMobile && !isMinimized && children ? `min(${currentHeight}px, 34vh)` : `${currentHeight}px`,
+                  //
+                  // The cap alone was not enough. With `flexShrink: 0` the stage
+                  // never gave up a pixel, and since the input bar, the flow
+                  // region and the error toast were rigid too, the transcript
+                  // was the only block that could yield — so it took the entire
+                  // squeeze and collapsed. Measured at 478x826: stage 281px,
+                  // transcript 168px. Letting the stage shrink is what gives the
+                  // conversation room back; the min keeps the face recognisable.
+                  //
+                  // `dvh` rather than `vh`: on mobile `vh` resolves to the LARGE
+                  // viewport, which includes the space behind the browser's URL
+                  // bar. At 826px visible the page reports 950, and 34vh of the
+                  // wrong number is how the input row ended up under the chrome.
+                  ...isMobile && !isMinimized && children ? {
+                    flex: "1 1 auto",
+                    maxHeight: `min(${currentHeight}px, 34dvh)`,
+                    minHeight: "min(160px, 20dvh)"
+                  } : { height: `${currentHeight}px`, flexShrink: 0 },
                   maxWidth: "100%",
-                  flexShrink: 0,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -13879,14 +14043,39 @@ const chunkText = (text, opts = {}) => {
   }
   return merged.filter(Boolean);
 };
+const warnedTimingProps = /* @__PURE__ */ new Set();
 const useTTSDetection = ({
-  pauseThreshold = 150,
-  idleTransitionDelay = 400,
-  talkStartDelay = 0,
-  minTalkDuration = 500,
-  minIdleDuration = 300,
+  // ---- deprecated timing knobs (1.13.0) ----
+  //
+  // Talk state used to be a single boolean doing two jobs, driven by timers.
+  // It is now split, the way the desktop player splits it:
+  //
+  //   SESSION  (here)    "a reply is being spoken" — driven only by real audio
+  //                      events, and it selects the talk frame RANGE.
+  //   VOICING  (runtime) "sound is coming out right now" — driven by the audio
+  //                      envelope, and it decides whether the mouth moves.
+  //
+  // So `isTalking` staying true across the inter-chunk gap is now CORRECT: the
+  // avatar is mid-reply, on talk frames, with its mouth shut because the gate
+  // says silence. Every knob below existed to paper over the missing voicing
+  // gate, and each one caused a visible artefact of its own.
+  pauseThreshold = void 0,
+  talkStartDelay = void 0,
+  minTalkDuration = void 0,
+  minIdleDuration = void 0,
+  // Retained: the session-end delay. Default 0 — the mouth is already shut by
+  // the voicing gate, so there is nothing left to hide.
+  idleTransitionDelay = 0,
   onTalkStart,
   onTalkEnd,
+  // Fired when speech is cancelled or the queue drains, so the host can shut
+  // the mouth NOW. Without it the avatar holds whatever talk frame it was on,
+  // waiting for an audio block that will never arrive.
+  onForceLipsClosed,
+  // Fired once per word boundary on the browser SpeechSynthesis path, which
+  // exposes no waveform to analyse. Lets the host drive per-syllable movement
+  // instead of a binary talk/idle flap.
+  onSyntheticPulse,
   ttsProvider = "browser",
   ttsConfig = {},
   // ---- streaming/chunked config ----
@@ -13906,6 +14095,16 @@ const useTTSDetection = ({
   onChunkAudio
 } = {}) => {
   const [isTalking, setIsTalking] = useState(false);
+  useEffect(() => {
+    const gone = { pauseThreshold, talkStartDelay, minTalkDuration, minIdleDuration };
+    for (const key of Object.keys(gone)) {
+      if (gone[key] === void 0 || warnedTimingProps.has(key)) continue;
+      warnedTimingProps.add(key);
+      console.warn(
+        `[useTTSDetection] \`${key}\` is deprecated and ignored since 1.13.0. Mouth movement is now driven by the audio envelope (a voicing gate that opens ~60ms after sound starts and closes ~180ms after it stops), not by timers. This prop only ever existed to paper over the missing gate.`
+      );
+    }
+  }, [pauseThreshold, talkStartDelay, minTalkDuration, minIdleDuration]);
   const pauseTimeoutRef = useRef(null);
   const idleTransitionTimeoutRef = useRef(null);
   const talkStartTimeoutRef = useRef(null);
@@ -13913,8 +14112,6 @@ const useTTSDetection = ({
   const lastBoundaryTimeRef = useRef(null);
   const isSpeakingRef = useRef(false);
   const audioRef = useRef(null);
-  const lastTalkActivationRef = useRef(null);
-  const lastIdleActivationRef = useRef(null);
   const genRef = useRef(0);
   const gapTimeoutRef = useRef(null);
   const pendingUrlsRef = useRef(/* @__PURE__ */ new Set());
@@ -13926,51 +14123,12 @@ const useTTSDetection = ({
       clearTimeout(idleTransitionTimeoutRef.current);
       idleTransitionTimeoutRef.current = null;
     }
-    if (talkStartTimeoutRef.current) return;
-    const now = Date.now();
-    const timeSinceIdle = lastIdleActivationRef.current ? now - lastIdleActivationRef.current : Infinity;
-    const doActivate = () => {
-      lastTalkActivationRef.current = Date.now();
-      setIsTalking((prev) => {
-        if (!prev) {
-          if (onTalkStart) onTalkStart();
-        }
-        return true;
-      });
-      talkStartTimeoutRef.current = null;
-    };
-    const idleHoldRemaining = Math.max(0, minIdleDuration - timeSinceIdle);
-    const delay = Math.max(talkStartDelay, idleHoldRemaining);
-    if (delay > 0) {
-      talkStartTimeoutRef.current = setTimeout(doActivate, delay);
-    } else {
-      doActivate();
-    }
-  }, [onTalkStart, talkStartDelay, minIdleDuration]);
-  useCallback(() => {
-    const now = Date.now();
-    const timeSinceTalk = lastTalkActivationRef.current ? now - lastTalkActivationRef.current : Infinity;
-    const effectiveDelay = Math.max(idleTransitionDelay, minTalkDuration - timeSinceTalk);
-    if (idleTransitionTimeoutRef.current) {
-      clearTimeout(idleTransitionTimeoutRef.current);
-    }
-    idleTransitionTimeoutRef.current = setTimeout(() => {
-      lastIdleActivationRef.current = Date.now();
-      setIsTalking((prev) => {
-        if (prev) {
-          if (onTalkEnd) onTalkEnd();
-        }
-        return false;
-      });
-      idleTransitionTimeoutRef.current = null;
-    }, effectiveDelay);
-  }, [idleTransitionDelay, onTalkEnd, minTalkDuration]);
-  const resetPauseTimeout = useCallback(() => {
-    if (pauseTimeoutRef.current) {
-      clearTimeout(pauseTimeoutRef.current);
-    }
-    activateTalk();
-  }, [activateTalk]);
+    setIsTalking((prev) => {
+      if (!prev && onTalkStart) onTalkStart();
+      return true;
+    });
+  }, [onTalkStart]);
+  const resetPauseTimeout = activateTalk;
   const revokeAllUrls = useCallback(() => {
     for (const url of pendingUrlsRef.current) {
       try {
@@ -13993,6 +14151,7 @@ const useTTSDetection = ({
       clearTimeout(gapTimeoutRef.current);
       gapTimeoutRef.current = null;
     }
+    if (onForceLipsClosed) onForceLipsClosed();
     if (pauseTimeoutRef.current) {
       clearTimeout(pauseTimeoutRef.current);
       pauseTimeoutRef.current = null;
@@ -14030,17 +14189,24 @@ const useTTSDetection = ({
     isSpeakingRef.current = false;
     isPlayingRef.current = false;
     revokeAllUrls();
-  }, [revokeAllUrls]);
+  }, [revokeAllUrls, onForceLipsClosed]);
   const scheduleIdle = useCallback(() => {
     if (idleTransitionTimeoutRef.current) {
       clearTimeout(idleTransitionTimeoutRef.current);
+      idleTransitionTimeoutRef.current = null;
     }
-    idleTransitionTimeoutRef.current = setTimeout(() => {
+    const finish = () => {
       setIsTalking(false);
       if (onTalkEnd) onTalkEnd();
+      if (onForceLipsClosed) onForceLipsClosed();
       idleTransitionTimeoutRef.current = null;
-    }, idleTransitionDelay);
-  }, [idleTransitionDelay, onTalkEnd]);
+    };
+    if (idleTransitionDelay > 0) {
+      idleTransitionTimeoutRef.current = setTimeout(finish, idleTransitionDelay);
+    } else {
+      finish();
+    }
+  }, [idleTransitionDelay, onTalkEnd, onForceLipsClosed]);
   const synthChunkAudio = useCallback(async (chunkStr, signal) => {
     const { audioUrl } = await professionalTTSRequest(chunkStr, ttsProvider, ttsConfig);
     pendingUrlsRef.current.add(audioUrl);
@@ -14194,6 +14360,7 @@ const useTTSDetection = ({
       utterance.onboundary = () => {
         lastBoundaryTimeRef.current = Date.now();
         resetPauseTimeout();
+        if (onSyntheticPulse) onSyntheticPulse(1);
       };
       utterance.onend = () => {
         if (genRef.current !== myGen) return;
@@ -14507,6 +14674,74 @@ const useSpeechRecognition = ({
     clearTranscript
   };
 };
+const DEVICE_ID_KEY = "ania.deviceId.v1";
+let memoryFallback = null;
+const generate = () => {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    }
+  } catch (e) {
+  }
+  return "dev-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12);
+};
+const privacyControlled = () => {
+  try {
+    return typeof navigator !== "undefined" && navigator.globalPrivacyControl === true;
+  } catch (e) {
+    return false;
+  }
+};
+const readFrom = (store, key) => {
+  try {
+    const v = store.getItem(key);
+    return v && typeof v === "string" ? v : null;
+  } catch (e) {
+    return null;
+  }
+};
+const writeTo = (store, key, value) => {
+  try {
+    store.setItem(key, value);
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+const getDeviceId = ({ enabled = true, key = DEVICE_ID_KEY } = {}) => {
+  const ephemeral = enabled === false || privacyControlled();
+  if (!ephemeral && typeof localStorage !== "undefined") {
+    const existing = readFrom(localStorage, key);
+    if (existing) return existing;
+    const fresh = generate();
+    if (writeTo(localStorage, key, fresh)) return fresh;
+  }
+  if (typeof sessionStorage !== "undefined") {
+    const existing = readFrom(sessionStorage, key);
+    if (existing) return existing;
+    const fresh = generate();
+    if (writeTo(sessionStorage, key, fresh)) return fresh;
+  }
+  if (!memoryFallback) memoryFallback = generate();
+  return memoryFallback;
+};
+const resetDeviceId = ({ key = DEVICE_ID_KEY } = {}) => {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(key);
+  } catch (e) {
+  }
+  try {
+    if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(key);
+  } catch (e) {
+  }
+  memoryFallback = null;
+  return getDeviceId({ key });
+};
 const DEFAULT_GENERIC_ERROR = "Tive um probleminha aqui, pode tentar de novo?";
 function resolveGenericError(translate) {
   if (typeof translate === "function") {
@@ -14533,6 +14768,20 @@ const useChatbot = ({
   onError,
   formatRequest,
   parseResponse,
+  // Host-supplied constant fields merged into EVERY webhook POST body (e.g. a
+  // tenant/route context the backend needs to route the prompt). They are
+  // merged FIRST, so `message`, `attachments` and the flow metadata
+  // (sessionId/collected/escalate) can never be clobbered by host config.
+  // Default `null` = body identical to before.
+  extraPayload = null,
+  // A stable per-browser id, sent on EVERY request as both a header and a body
+  // field. Without one the backend proxy drops the session header and the agent
+  // falls back to deriving a session from SHA-256(prompt + first message) — the
+  // same value for every visitor, so all of them share one transcript. That is
+  // the 'interacting on one PC advances another PC' bug.
+  // `false` opts out; Global Privacy Control is honoured automatically.
+  deviceIdEnabled = true,
+  deviceId: deviceIdOverride,
   availableActions = [],
   onActionTriggered,
   // Optional i18n resolver (AvatarChatbot passes tr.t). Used only to localize
@@ -14540,6 +14789,12 @@ const useChatbot = ({
   translate
 } = {}) => {
   const [messages, setMessages] = useState([]);
+  const deviceId = useMemo(
+    () => deviceIdOverride || getDeviceId({ enabled: deviceIdEnabled }),
+    [deviceIdOverride, deviceIdEnabled]
+  );
+  const conversationIdRef = useRef(null);
+  if (!conversationIdRef.current) conversationIdRef.current = getDeviceId({ enabled: false });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const sendMessage = useCallback(async (message, metadata = {}) => {
@@ -14606,7 +14861,15 @@ const useChatbot = ({
     setError(null);
     try {
       const actionsList = availableActions.length > 0 ? availableActions.map((a) => ({ id: a.id, name: a.name })) : void 0;
-      const requestBody = formatRequest ? formatRequest(message, { ...metadata, availableActions: actionsList }) : {
+      const identity = { deviceId, sessionId: conversationIdRef.current };
+      const requestBody = formatRequest ? formatRequest(message, {
+        ...extraPayload || {},
+        ...identity,
+        ...metadata,
+        availableActions: actionsList
+      }) : {
+        ...extraPayload || {},
+        ...identity,
         message,
         attachments: attachments.length > 0 ? attachments : void 0,
         availableActions: actionsList,
@@ -14614,6 +14877,10 @@ const useChatbot = ({
       };
       const headers = {
         "Content-Type": "application/json",
+        // Headers, not only the body: a host supplying its own formatRequest
+        // reshapes the body entirely, and identity has to survive that.
+        "X-Ania-Device-Id": deviceId,
+        "X-Ania-Session-Id": metadata && metadata.sessionId || conversationIdRef.current,
         ...webhookHeaders
       };
       if (webhookApiKey) {
@@ -14693,24 +14960,26 @@ const useChatbot = ({
         isError: true
       };
       setMessages((prev) => [...prev, errorMessage]);
-      setError(friendlyMessage);
       if (onError) {
         onError(err, friendlyMessage);
       }
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, onResponse, onError, availableActions, onActionTriggered, translate]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, extraPayload, onResponse, onError, availableActions, onActionTriggered, translate]);
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
+    conversationIdRef.current = getDeviceId({ enabled: false });
   }, []);
   return {
     messages,
     sendMessage,
     isLoading,
     error,
-    clearMessages
+    clearMessages,
+    deviceId,
+    conversationId: conversationIdRef.current
   };
 };
 function getNode(flowDef, nodeId) {
@@ -15592,6 +15861,23 @@ const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } = {}) =
     }
     return maxAmp;
   }, [kickResume]);
+  const getRms = useCallback(() => {
+    if (!analyserRef.current) return 0;
+    const ctx = audioContextRef.current;
+    if (ctx && ctx.state !== "running") {
+      kickResume();
+      return 0;
+    }
+    const analyser = analyserRef.current;
+    const timeData = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(timeData);
+    let sumSquares = 0;
+    for (let i = 0; i < timeData.length; i++) {
+      const sample = (timeData[i] - 128) / 128;
+      sumSquares += sample * sample;
+    }
+    return Math.sqrt(sumSquares / timeData.length);
+  }, [kickResume]);
   const disconnect = useCallback(() => {
     if (sourceRef.current) {
       try {
@@ -15629,6 +15915,7 @@ const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } = {}) =
     getSpectralOpenness,
     getSpectralFlux,
     getAmplitude,
+    getRms,
     disconnect,
     isConnected: () => !!connectedElementRef.current
   };
@@ -17026,6 +17313,10 @@ const AvatarChatbotWidget = ({
   idleSpeed = void 0,
   talkSpeed = void 0,
   autoCalculateSpeed = true,
+  // Playback is held to 24-30 fps by default so every avatar looks
+  // consistent. `false` restores the legacy unbounded behaviour;
+  // `{min, max}` sets a custom window. Forwarded to <AniaAvatar>.
+  fpsClamp = void 0,
   showSpeedControls = false,
   startMinimized = false,
   preserveQuality = true,
@@ -17085,6 +17376,18 @@ const AvatarChatbotWidget = ({
   // n8n authentication
   webhookApiKey = null,
   webhookHeaders = {},
+  // Constant fields merged into EVERY webhook POST body — the host's way of
+  // telling the backend something the widget itself does not know (tenant,
+  // route context, campaign...). Merged FIRST, so it can never overwrite
+  // `message`, `attachments` or the flow metadata. Default `null` = the body
+  // is byte-for-byte what it was before this prop existed.
+  extraPayload = null,
+  // A stable per-browser id is sent with every message so the backend can keep
+  // visitors' conversations apart. `false` opts out — note that without it the
+  // backend cannot distinguish visitors and may merge them. It is a persistent
+  // identifier, so it belongs in the host's privacy notice; Global Privacy
+  // Control is honoured automatically.
+  deviceIdEnabled = true,
   // Client-side responder override. When provided, the chat calls this instead
   // of POSTing to webhookUrl — receives (message, metadata), returns the reply
   // (a string, or an object with { message, attachments?, action? }). Use it for
@@ -17092,12 +17395,19 @@ const AvatarChatbotWidget = ({
   // required. See useChatbot.
   onSendMessage,
   // Lip sync props
-  lipSyncEnabled = false,
+  // Default ON since 1.13.0. The sweep model works fully without any openness
+  // map — branch C never consults one — so this costs nothing and no network.
+  lipSyncEnabled = true,
   // null = origem padrão da API ANIA (ver AniaAvatar / lip-sync-api.js).
   lipSyncServerUrl = null,
   // Com lip sync ligado, baixa sozinho a melhor config publicada para este
   // avatar (contentHash) e aplica; false = só o que veio no .ania + props.
-  lipSyncAutoFetch = true,
+  // Default OFF since 1.13.0, deliberately paired with lipSyncEnabled going ON.
+  // Leaving BOTH on would make every host page issue a third-party request to
+  // the lip sync server on mount: a CSP break, a privacy-notice item, and a new
+  // hard dependency in the first-paint path. Not an acceptable side effect of a
+  // rendering fix. Maps authored into the .ania still work with zero network.
+  lipSyncAutoFetch = false,
   lipSyncConfigId = null,
   lipSyncMaxCandidates = 5,
   onLipSyncConfig = null,
@@ -17202,6 +17512,7 @@ const AvatarChatbotWidget = ({
     if (typeof talkSpeed === "number") setCurrentTalkSpeed(talkSpeed);
   }, [talkSpeed]);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
+  const [avatarFailed, setAvatarFailed] = useState(false);
   const [isCurrentlyMinimized, setIsCurrentlyMinimized] = useState(startMinimized);
   const [attachments, setAttachments] = useState([]);
   const [flowInputValue, setFlowInputValue] = useState("");
@@ -17249,15 +17560,24 @@ const AvatarChatbotWidget = ({
     return () => window.clearTimeout(id2);
   }, [piperPreload, ensurePiperPreload]);
   const lipSyncConnectRef = useRef(null);
+  const lipsControlRef = useRef({ close: null, pulse: null });
   const { isTalking, speak, cancel } = useTTSDetection({
-    pauseThreshold: 350,
-    idleTransitionDelay: postTalkDelay,
-    talkStartDelay,
-    minTalkDuration,
-    minIdleDuration,
+    // The four timing knobs are gone: mouth movement is driven by the audio
+    // envelope now, not by timers. See the deprecation note in useTTSDetection.
+    // `postTalkDelay` in particular defaulted to 1500 ms here, which is why the
+    // avatar kept talking for a second and a half after the audio ended.
+    idleTransitionDelay: 0,
     onTalkStart: () => {
     },
     onTalkEnd: () => {
+    },
+    onForceLipsClosed: () => {
+      const close = lipsControlRef.current && lipsControlRef.current.close;
+      if (close) close();
+    },
+    onSyntheticPulse: (v) => {
+      const pulse = lipsControlRef.current && lipsControlRef.current.pulse;
+      if (pulse) pulse(v);
     },
     ttsProvider,
     ttsChunking,
@@ -17288,7 +17608,7 @@ const AvatarChatbotWidget = ({
       robsManifestUrl
     }
   });
-  const lipSync = useLipSync({ enabled: lipSyncEnabled && ttsProvider !== "browser" });
+  const lipSync = useLipSync({ enabled: lipSyncEnabled });
   useEffect(() => {
     lipSyncConnectRef.current = lipSync.connectAudioElement;
   }, [lipSync.connectAudioElement]);
@@ -17466,9 +17786,11 @@ const AvatarChatbotWidget = ({
     previousMinimizedRef.current = isMinimized;
   };
   const { messages, sendMessage, isLoading, error } = useChatbot({
+    deviceIdEnabled,
     webhookUrl,
     webhookApiKey,
     webhookHeaders,
+    extraPayload,
     onSendMessage,
     availableActions,
     // Localize the friendly fallback copy (chat.error.generic) shown on failure.
@@ -17573,7 +17895,7 @@ const AvatarChatbotWidget = ({
     if (input.next != null) flow_.goto(input.next);
   }, [flow_]);
   const buildFlowMetadata = useCallback(() => {
-    if (!activeFlow) return {};
+    if (!activeFlow) return { appId };
     return {
       sessionId: flow_.sessionId,
       appId,
@@ -17611,7 +17933,7 @@ const AvatarChatbotWidget = ({
         }
       },
       ask: (text) => {
-        if (sendMessageRef.current) sendMessageRef.current(text);
+        if (sendMessageRef.current) sendMessageRef.current(text, buildFlowMetadata());
       },
       stopSpeaking: () => {
         if (cancelTtsRef.current) cancelTtsRef.current();
@@ -17709,9 +18031,8 @@ const AvatarChatbotWidget = ({
   const transcriptMessages = lastFlowPromptId != null ? allMessages.filter((m) => m.id !== lastFlowPromptId) : allMessages;
   const flowNodeId2 = flowNode ? flowNode.id : null;
   useEffect(() => {
-    if (flowNodeActive) return;
     var _a2;
-    (_a2 = messagesEndRef.current) == null ? void 0 : _a2.scrollIntoView({ behavior: "smooth" });
+    (_a2 = messagesEndRef.current) == null ? void 0 : _a2.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [allMessages, flowNodeActive]);
   useEffect(() => {
     if (!flowNodeActive) return;
@@ -17729,6 +18050,28 @@ const AvatarChatbotWidget = ({
     }
     controller.setTalkingState(isTalking);
   }, [isTalking, avatarRef]);
+  useEffect(() => {
+    var _a2, _b2;
+    const controller = (_b2 = (_a2 = avatarRef == null ? void 0 : avatarRef.playerRef) == null ? void 0 : _a2.current) == null ? void 0 : _b2.animationController;
+    if (!controller) return;
+    lipsControlRef.current = {
+      close: typeof controller.forceLipsClosed === "function" ? () => {
+        try {
+          controller.forceLipsClosed();
+        } catch (e) {
+        }
+      } : null,
+      pulse: typeof controller.pushSyntheticOpenness === "function" ? (v) => {
+        try {
+          controller.pushSyntheticOpenness(v);
+        } catch (e) {
+        }
+      } : null
+    };
+    return () => {
+      lipsControlRef.current = { close: null, pulse: null };
+    };
+  }, [avatarRef, isAvatarLoaded]);
   const isTalkingLiveRef = useRef(isTalking);
   useEffect(() => {
     isTalkingLiveRef.current = isTalking;
@@ -18092,12 +18435,20 @@ const AvatarChatbotWidget = ({
   }) : null;
   const flowInteractionRegion = flowNodeActive ? jsxs("div", {
     style: {
-      flexShrink: 0,
+      // Shrinkable, not rigid. This region already has its own scrolling
+      // sub-area for the answer affordances, but that scroller never engaged:
+      // with `flexShrink: 0` the region kept its full natural height and the
+      // transcript — the only flexible sibling — absorbed the entire squeeze.
+      // Measured at 478x826 with six options: region 246px, transcript 168px.
+      // The answers scroll now instead of the conversation disappearing.
+      flexShrink: 1,
+      minHeight: 120,
       display: "flex",
       flexDirection: "column",
-      minHeight: 0,
       // Cap the whole region so it + transcript + input bar fit small screens.
-      maxHeight: `min(55vh, max(180px, calc(100vh - ${height + 140}px)))`,
+      // `dvh`, not `vh`: on mobile `vh` is the LARGE viewport, which counts the
+      // space behind the browser's own chrome.
+      maxHeight: `min(55dvh, max(180px, calc(100dvh - ${height + 140}px)))`,
       margin: "0 0 4px",
       padding: "10px 12px 4px",
       borderTop: "1px solid rgba(0,0,0,0.06)",
@@ -18185,9 +18536,14 @@ const AvatarChatbotWidget = ({
       idleSpeed: currentIdleSpeed,
       talkSpeed: currentTalkSpeed,
       autoCalculateSpeed,
+      fpsClamp,
       preserveQuality,
       alwaysOnTop,
-      startMinimized: startMinimized || !isAvatarLoaded,
+      // Start minimised while the avatar is still loading — but not forever.
+      // `!isAvatarLoaded` alone meant that an app whose `/player/aniaplayer.min.js`
+      // 404s could never open its chat, because the flag that un-minimises it is
+      // set by an avatar that never arrives. The chat does not need the avatar.
+      startMinimized: startMinimized || !isAvatarLoaded && !avatarFailed,
       // Lip sync passthrough
       lipSyncEnabled,
       lipSyncServerUrl,
@@ -18209,6 +18565,11 @@ const AvatarChatbotWidget = ({
       onLoad: (player) => {
         setAvatarRef({ playerRef: { current: player } });
         setIsAvatarLoaded(true);
+        setAvatarFailed(false);
+      },
+      onError: (err) => {
+        console.warn("[AvatarChatbot] avatar unavailable, continuing without it:", err);
+        setAvatarFailed(true);
       },
       onToggleMinimize: handleMinimizeToggle,
       onClose,
@@ -18226,11 +18587,16 @@ const AvatarChatbotWidget = ({
             className: "ania-chat-scroll",
             style: {
               flex: "1 1 auto",
-              minHeight: "60px",
+              // A real floor, not 60px. The transcript used to be the only
+              // shrinkable block in the column, so every rigid sibling took its
+              // space and it collapsed to 168px — a fifth of the screen for the
+              // conversation itself. Now that the avatar and the flow region
+              // both give way, this floor is what stops the squeeze here.
+              minHeight: "min(180px, 24dvh)",
               // Growth cap only — when space is tight the flex parent (which is
               // clamped to the viewport) shrinks this area, so the input bar is
-              // never pushed off screen. No viewport math needed here.
-              maxHeight: flowNodeActive ? "min(220px, 30vh)" : "min(420px, 48vh)",
+              // never pushed off screen.
+              maxHeight: flowNodeActive ? "min(320px, 40dvh)" : "min(420px, 48dvh)",
               overflowY: "auto",
               padding: "14px 14px 6px",
               WebkitOverflowScrolling: "touch",
@@ -18452,7 +18818,17 @@ const AvatarChatbotWidget = ({
           }),
           // ========== BARRA DE INPUT ==========
           jsxs("div", {
-            style: { padding: "8px 12px", display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 },
+            // The bottom padding clears the home indicator / gesture bar. Without
+            // it the send button sits underneath the system UI on an iPhone and
+            // on gesture-navigation Android.
+            style: {
+              padding: "8px 12px",
+              paddingBottom: "calc(8px + env(safe-area-inset-bottom, 0px))",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              flexShrink: 0
+            },
             children: [
               // Botão anexar
               enableAttachments && jsx("button", {
@@ -18644,8 +19020,15 @@ const SECTIONS = [
     label: "Animation",
     fields: [
       { key: "autoCalculateSpeed", label: "Auto-calculate speed", type: "boolean", def: true },
-      { key: "idleSpeed", label: "Idle speed", type: "number", def: 1, min: 0.1, max: 5, step: 0.1 },
-      { key: "talkSpeed", label: "Talk speed", type: "number", def: 1, min: 0.1, max: 5, step: 0.1 },
+      // Range narrowed in 1.13.0. These are now multipliers relative to the
+      // .ania's own frame rate, and the result is held inside fpsClamp
+      // (24-30 fps by default) — a window only 1.25x wide. The old 0.1-5
+      // range mostly mapped onto the clamp boundaries, so dragging the
+      // slider past ~1.25 changed nothing and read as 'the control is
+      // broken'. Set fpsClamp={false} on the component to get the full
+      // unbounded range back.
+      { key: "idleSpeed", label: "Idle speed (x native fps)", type: "number", def: 1, min: 0.5, max: 1.5, step: 0.05 },
+      { key: "talkSpeed", label: "Talk speed (x native fps)", type: "number", def: 1, min: 0.5, max: 1.5, step: 0.05 },
       { key: "showSpeedControls", label: "Show speed controls", type: "boolean", def: false },
       { key: "talkStartDelay", label: "Talk start delay (ms)", type: "number", def: 0, min: 0, max: 5e3, step: 50 },
       { key: "postTalkDelay", label: "Post-talk delay (ms)", type: "number", def: 1500, min: 0, max: 1e4, step: 50 },
@@ -19212,6 +19595,371 @@ const useAniaAvatarRef = () => {
   };
   return { ref, setTalking, play, pause, triggerAction, cancelAction, getAvailableActions, setLipSyncEnabled, getLipSyncState, runCommand };
 };
+const MAX_DT_MS$1 = 100;
+const REF_BLOCK_MS = 30;
+const EMA_RETENTION_PER_BLOCK = 0.4;
+const PEAK_DECAY_PER_BLOCK = 0.995;
+const clampDt$1 = (dtMs) => {
+  const dt = Number(dtMs);
+  if (!Number.isFinite(dt)) return 0;
+  return Math.min(MAX_DT_MS$1, Math.max(0, dt));
+};
+const finiteOrZero = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+class LipSyncDsp {
+  constructor(options = {}) {
+    this.amplitudeThreshold = Number.isFinite(options.amplitudeThreshold) ? options.amplitudeThreshold : 0.02;
+    this.gateOpenMs = Number.isFinite(options.gateOpenMs) ? options.gateOpenMs : 60;
+    this.gateCloseMs = Number.isFinite(options.gateCloseMs) ? options.gateCloseMs : 180;
+    this.peakFloor = Number.isFinite(options.peakFloor) ? options.peakFloor : 0.05;
+    this.emaHalfLifeRefMs = Number.isFinite(options.emaHalfLifeRefMs) ? options.emaHalfLifeRefMs : REF_BLOCK_MS;
+    this.peakDecayRefMs = Number.isFinite(options.peakDecayRefMs) ? options.peakDecayRefMs : REF_BLOCK_MS;
+    this.reset();
+  }
+  /**
+   * Zero every temporal accumulator. Call on the idle->talking edge: state left
+   * over from the PREVIOUS utterance (a peak still sitting at 1.0, a gate still
+   * counting down) makes the first syllable of the new one animate wrong.
+   */
+  reset() {
+    this.smoothed = 0;
+    this.opennessSmoothed = 0;
+    this.peak = this.peakFloor;
+    this.opennessPeak = this.peakFloor;
+    this.amplitude = 0;
+    this.openness = 0;
+    this.gateOpen = false;
+    this.openMs = 0;
+    this.closeMs = 0;
+  }
+  isGateOpen() {
+    return this.gateOpen;
+  }
+  /**
+   * Advance the DSP by `dtMs` of wall clock with a new raw reading.
+   *
+   * @param {number} dtMs   elapsed ms since the previous poll (clamped internally)
+   * @param {number} rawRms RMS of the current audio, in [0,1]. Non-finite -> 0.
+   * @param {number} [rawOpenness] optional richer openness estimate.
+   *
+   *   The desktop's TTS path uses the cheap `amplitude * 1.1` proxy — voiced
+   *   segments are usually the loud ones, and a per-block FFT would just burn
+   *   CPU. Its MIC path uses `0.7*amp**0.6 + 0.3*lowFreqRatio*amp`, which needs
+   *   spectral data. On the web the analyser already exists, so `useLipSync`
+   *   can hand us that richer value here. When `rawOpenness` is a finite
+   *   number it is smoothed and AGC-normalised through its OWN channel (same
+   *   constants) and replaces the proxy. The gate always keys off `rawRms`,
+   *   never off `rawOpenness` — the gate's 0.020 threshold is calibrated in RMS
+   *   units and means nothing on a 0..1 openness curve.
+   *
+   * @returns {{amplitude:number, openness:number, gateOpen:boolean, smoothed:number, peak:number}}
+   */
+  poll(dtMs, rawRms, rawOpenness) {
+    const dt = clampDt$1(dtMs);
+    const raw = Math.max(0, finiteOrZero(rawRms));
+    const emaK = 1 - Math.pow(EMA_RETENTION_PER_BLOCK, dt / this.emaHalfLifeRefMs);
+    this.smoothed += (raw - this.smoothed) * emaK;
+    const peakDecay = Math.pow(PEAK_DECAY_PER_BLOCK, dt / this.peakDecayRefMs);
+    this.peak = Math.max(this.peak * peakDecay, this.smoothed, this.peakFloor);
+    this.amplitude = Math.min(1, this.smoothed / Math.max(this.peak, 1e-6));
+    const hasSpectral = Number.isFinite(Number(rawOpenness));
+    if (hasSpectral) {
+      const rawOpen = Math.max(0, Number(rawOpenness));
+      this.opennessSmoothed += (rawOpen - this.opennessSmoothed) * emaK;
+      this.opennessPeak = Math.max(
+        this.opennessPeak * peakDecay,
+        this.opennessSmoothed,
+        this.peakFloor
+      );
+      this.openness = Math.min(1, this.opennessSmoothed / Math.max(this.opennessPeak, 1e-6));
+    } else {
+      this.openness = Math.min(1, this.amplitude * 1.1);
+    }
+    if (raw > this.amplitudeThreshold) {
+      this.closeMs = 0;
+      this.openMs += dt;
+      if (!this.gateOpen && this.openMs > this.gateOpenMs) {
+        this.gateOpen = true;
+      }
+    } else {
+      this.openMs = 0;
+      this.closeMs += dt;
+      if (this.gateOpen && this.closeMs > this.gateCloseMs) {
+        this.gateOpen = false;
+        this.smoothed = 0;
+        this.opennessSmoothed = 0;
+        this.amplitude = 0;
+        this.openness = 0;
+      }
+    }
+    return {
+      amplitude: this.amplitude,
+      openness: this.openness,
+      gateOpen: this.gateOpen,
+      smoothed: this.smoothed,
+      peak: this.peak
+    };
+  }
+}
+const MAX_DT_MS = 100;
+const REF_TICK_MS = 16.667;
+const SUSTAIN_WINDOW_MS = 200;
+const SUSTAIN_MIN_SAMPLES = 6;
+const WIGGLE_PERIOD_MS = 333.3;
+const SUSTAIN_ENTER = 8;
+const SUSTAIN_CAP = 30;
+const SUSTAIN_DRAIN = 3;
+const clamp = (v, lo2, hi2) => Math.min(hi2, Math.max(lo2, v));
+const clampDt = (dtMs) => {
+  const dt = Number(dtMs);
+  if (!Number.isFinite(dt)) return 0;
+  return Math.min(MAX_DT_MS, Math.max(0, dt));
+};
+const num = (value, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+const findClosedFrame = (opennessMap, currentRel, mapLen) => {
+  const len = Math.min(
+    Number.isFinite(mapLen) ? Math.floor(mapLen) : 0,
+    Array.isArray(opennessMap) ? opennessMap.length : 0
+  );
+  if (len <= 0) return 0;
+  const cur = clamp(Number.isFinite(currentRel) ? currentRel : 0, 0, len - 1);
+  const proximityWeight = 0.1 / Math.max(1, len - 1);
+  let bestIdx = Math.round(cur);
+  let bestScore = Infinity;
+  for (let i = 0; i < len; i++) {
+    const value = Number(opennessMap[i]);
+    const opennessDiff = Math.abs(Number.isFinite(value) ? value : 0);
+    const score = opennessDiff + Math.abs(i - cur) * proximityWeight;
+    if (score < bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+};
+class LipAnimator {
+  constructor(options = {}) {
+    this.configure(options);
+    this.reset();
+  }
+  /**
+   * Live reconfiguration — the host can change `lipSyncIntensity` and friends
+   * at runtime, and nothing here depends on the previous values, so there is no
+   * need to tear the animator down and lose the envelope mid-sentence.
+   */
+  configure(options = {}) {
+    const o = options || {};
+    if ("intensity" in o || this.intensity === void 0) {
+      this.intensity = clamp(num(o.intensity, this.intensity !== void 0 ? this.intensity : 0.6), 0, 1);
+    }
+    if ("responsiveness" in o || this.responsiveness === void 0) {
+      this.responsiveness = clamp(
+        num(o.responsiveness, this.responsiveness !== void 0 ? this.responsiveness : 0.5),
+        0.05,
+        1
+      );
+    }
+    if ("sustainStyle" in o || this.sustainStyle === void 0) {
+      const style = o.sustainStyle || this.sustainStyle || "wiggle";
+      this.sustainStyle = style === "hold" ? "hold" : "wiggle";
+    }
+    if ("wiggleSpeed" in o || this.wiggleSpeed === void 0) {
+      this.wiggleSpeed = clamp(num(o.wiggleSpeed, this.wiggleSpeed !== void 0 ? this.wiggleSpeed : 2), 1, 6);
+    }
+    if ("maxSweepBoost" in o || this.maxSweepBoost === void 0) {
+      this.maxSweepBoost = clamp(
+        num(o.maxSweepBoost, this.maxSweepBoost !== void 0 ? this.maxSweepBoost : 2.237),
+        1,
+        4.5
+      );
+    }
+    if ("silenceThreshold" in o || this.silenceThreshold === void 0) {
+      this.silenceThreshold = num(
+        o.silenceThreshold,
+        this.silenceThreshold !== void 0 ? this.silenceThreshold : 0.06
+      );
+    }
+    if ("snapAfterMs" in o || this.snapAfterMs === void 0) {
+      this.snapAfterMs = num(o.snapAfterMs, this.snapAfterMs !== void 0 ? this.snapAfterMs : 250);
+    }
+    if ("maxSnapStep" in o || this.maxSnapStep === void 0) {
+      this.maxSnapStep = Math.max(
+        1,
+        Math.round(num(o.maxSnapStep, this.maxSnapStep !== void 0 ? this.maxSnapStep : 3))
+      );
+    }
+    if ("closeMs" in o || this.closeMs === void 0) {
+      this.closeMs = clamp(num(o.closeMs, this.closeMs !== void 0 ? this.closeMs : 200), 60, 1500);
+    }
+    return this;
+  }
+  /**
+   * Idle->talking edge. Everything temporal has to go, or the first syllable of
+   * the new utterance is animated with the tail of the previous one: a hot
+   * envelope opens the mouth before any audio, and a hot sustain counter parks
+   * it on a stale anchor.
+   */
+  reset() {
+    this.envelope = 0;
+    this.wigglePhase = 0;
+    this.history = [];
+    this.historyTime = 0;
+    this.sustainCounter = 0;
+    this.inSustain = false;
+    this.anchor = null;
+    this.direction = 1;
+    this.gateClosedMs = 0;
+    this.branch = "silence";
+    this.tickMs = REF_TICK_MS;
+  }
+  getEnvelope() {
+    return this.envelope;
+  }
+  /** 'sustain' | 'silence' | 'voiced' — the branch the last `step()` took. */
+  lastBranch() {
+    return this.branch;
+  }
+  /**
+   * Advance the temporal state by `dtMs` with a new raw openness reading.
+   *
+   * Call this on EVERY rAF, independent of the frame gate. The frame gate only
+   * decides when the picture is allowed to advance; if the envelope were only
+   * updated when a frame is emitted it would be sampled at the very rate it is
+   * supposed to be controlling, and the whole loop would alias.
+   *
+   * @param {number} dtMs elapsed ms since the previous poll (clamped internally)
+   * @param {number} rawOpenness 0..1 openness. Non-finite -> 0 (silence).
+   */
+  poll(dtMs, rawOpenness) {
+    const dt = clampDt(dtMs);
+    const rawNum = Number(rawOpenness);
+    const raw = clamp(Number.isFinite(rawNum) ? rawNum : 0, 0, 1);
+    this.tickMs = this.tickMs * 0.9 + dt * 0.1;
+    const boosted = Math.min(1, raw * (0.4 + 1.6 * this.intensity));
+    this.historyTime += dt;
+    this.history.push({ t: this.historyTime, v: raw });
+    const cutoff = this.historyTime - SUSTAIN_WINDOW_MS;
+    while (this.history.length && this.history[0].t < cutoff) this.history.shift();
+    let isStable = false;
+    if (this.history.length >= SUSTAIN_MIN_SAMPLES) {
+      let sum = 0;
+      let min2 = Infinity;
+      let max = -Infinity;
+      for (const s of this.history) {
+        sum += s.v;
+        if (s.v < min2) min2 = s.v;
+        if (s.v > max) max = s.v;
+      }
+      const mean = sum / this.history.length;
+      if (mean > 0.15) {
+        let variance = 0;
+        for (const s of this.history) variance += (s.v - mean) * (s.v - mean);
+        variance /= this.history.length;
+        const relStd = Math.sqrt(variance) / mean;
+        isStable = relStd < 0.05 && max - min2 < 0.07;
+      }
+    }
+    const ticks = dt / REF_TICK_MS;
+    if (isStable) {
+      this.sustainCounter = Math.min(SUSTAIN_CAP, this.sustainCounter + ticks);
+    } else {
+      this.sustainCounter = Math.max(0, this.sustainCounter - SUSTAIN_DRAIN * ticks);
+    }
+    this.inSustain = this.sustainCounter >= SUSTAIN_ENTER;
+    if (this.inSustain) {
+      this.wigglePhase += 2 * Math.PI * dt / WIGGLE_PERIOD_MS;
+    } else {
+      this.wigglePhase = 0;
+      this.anchor = null;
+    }
+    const delta = boosted - this.envelope;
+    const aPer = delta > 0 ? Math.min(1, 0.6 + 0.4 * this.responsiveness) : Math.min(1, 0.35 + 0.3 * this.responsiveness);
+    const aDt = aPer >= 1 ? dt > 0 ? 1 : 0 : 1 - Math.pow(1 - aPer, dt / REF_TICK_MS);
+    this.envelope = clamp(this.envelope + delta * aDt, 0, 1);
+    if (this.envelope < this.silenceThreshold) this.gateClosedMs += dt;
+    else this.gateClosedMs = 0;
+    return this.envelope;
+  }
+  /**
+   * Multiplier applied to the base (already fps-clamped) frame interval.
+   *
+   * This is the desktop's `return base_delay * speed_factor` one-for-one. The
+   * desktop hard-floors the factor at 0.2, but at the production intensity 0.79
+   * its own minimum is `1 - 0.79*0.7*1` = 0.447, so that floor is never
+   * reached. Replacing it with `1/maxSweepBoost` is therefore a literal no-op
+   * at production settings and only diverges above `intensity > 0.816` — while
+   * giving the host a single, honest knob for the loud/quiet sweep RATIO, which
+   * is the thing the eye actually reads as "in sync".
+   */
+  intervalScale() {
+    const floor = 1 / this.maxSweepBoost;
+    return Math.max(floor, 1 - this.intensity * 0.7 * this.envelope);
+  }
+  /**
+   * Pick the next frame index. Three mutually exclusive branches.
+   *
+   * Every branch moves the frame by at most +-1, with the single exception of
+   * branch B under the snap budget (at most +-3). There is never a jump cut:
+   * the source footage is a continuous mouth cycle, and skipping frames in it
+   * looks like a dropped frame, not like speech.
+   *
+   * @param {{currentFrame:number, talkLow:number, talkHigh:number, opennessMap?:number[]|null}} args
+   * @returns {number} the new absolute frame index
+   */
+  step({ currentFrame, talkLow, talkHigh, opennessMap } = {}) {
+    const low = Math.round(num(talkLow, 0));
+    const high = Math.round(num(talkHigh, 0));
+    if (high <= low) {
+      this.branch = this.inSustain ? "sustain" : this.envelope < this.silenceThreshold ? "silence" : "voiced";
+      return low;
+    }
+    const cur = clamp(Math.round(num(currentFrame, low)), low, high);
+    if (this.inSustain) {
+      this.branch = "sustain";
+      if (this.anchor === null) this.anchor = cur;
+      if (this.sustainStyle === "hold") {
+        return this._limitStep(cur, clamp(this.anchor, low, high));
+      }
+      const offset = Math.round(this.wiggleSpeed * Math.sin(this.wigglePhase));
+      return this._limitStep(cur, clamp(this.anchor + offset, low, high));
+    }
+    this.anchor = null;
+    if (this.envelope < this.silenceThreshold) {
+      this.branch = "silence";
+      const mapLen = Array.isArray(opennessMap) ? opennessMap.length : 0;
+      const target = low + findClosedFrame(opennessMap, cur - low, mapLen);
+      const distance = target - cur;
+      if (distance === 0) return cur;
+      let budget = 1;
+      if (this.gateClosedMs > this.snapAfterMs && Math.abs(distance) > 6) {
+        const tick = this.tickMs > 0 ? this.tickMs : REF_TICK_MS;
+        const remainMs = Math.max(tick, this.snapAfterMs + this.closeMs - this.gateClosedMs);
+        const ticksLeft = Math.max(1, Math.round(remainMs / tick));
+        const needed = Math.ceil(Math.abs(distance) / ticksLeft);
+        const ceiling = Math.max(this.maxSnapStep, Math.ceil((high - low + 1) * 0.1));
+        budget = clamp(needed, this.maxSnapStep, ceiling);
+      }
+      const move = Math.sign(distance) * Math.min(Math.abs(distance), budget);
+      return clamp(cur + move, low, high);
+    }
+    this.branch = "voiced";
+    if (cur >= high) this.direction = -1;
+    else if (cur <= low) this.direction = 1;
+    return clamp(cur + this.direction, low, high);
+  }
+  /** Clamp a candidate frame to at most +-1 away from where we are now. */
+  _limitStep(cur, candidate) {
+    const d = candidate - cur;
+    if (d > 1) return cur + 1;
+    if (d < -1) return cur - 1;
+    return candidate;
+  }
+}
 const CHATBOT_TEMPLATES = [
   {
     id: "greeter",
@@ -19337,7 +20085,10 @@ export {
   SECTIONS as CONFIGURATOR_SECTIONS,
   DEFAULT_LIP_SYNC_SERVER_URL,
   DEFAULT_LOCALE,
+  DEVICE_ID_KEY,
   FALLBACK_LOCALE,
+  LipAnimator,
+  LipSyncDsp,
   PLUGIN_KINDS,
   PluginRegistry,
   STT_PROVIDER_TO_PLUGIN,
@@ -19360,6 +20111,7 @@ export {
   fetchBestLipSyncConfig,
   fetchLipSyncConfig,
   fetchLipSyncConfigById,
+  findClosedFrame,
   getNode as flowGetNode,
   initialState as flowInitialState,
   interpolate as flowInterpolate,
@@ -19371,6 +20123,7 @@ export {
   getCacheStats,
   getCachedAvatar,
   getDefaultRegistry,
+  getDeviceId,
   getPiperStatus,
   getString,
   getStringList,
@@ -19390,6 +20143,7 @@ export {
   playActionAudio,
   preloadPiper,
   registerBuiltins,
+  resetDeviceId,
   scoreLipSyncConfig,
   setCachedAvatar,
   sttBrowserPlugin,
