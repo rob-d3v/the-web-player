@@ -13641,10 +13641,25 @@ const AniaAvatarPlayer = forwardRef(({
                   // viewport, which includes the space behind the browser's URL
                   // bar. At 826px visible the page reports 950, and 34vh of the
                   // wrong number is how the input row ended up under the chrome.
-                  ...isMobile && !isMinimized && children ? {
+                  //
+                  // NOT gated on `isMobile`. That was the mistake in the first
+                  // pass: `isMobile` asks about viewport WIDTH, and the thing
+                  // that runs out here is HEIGHT. Reported from a desktop
+                  // browser at 100% zoom on a ~930px-tall window: a fixed 400px
+                  // stage is 43% of the screen, nothing below it can shrink, and
+                  // the chat is unusable — the user had to drop the browser to
+                  // 50% zoom to work with it. At 50% the viewport reports ~1860
+                  // and the same 400px is 21%, which is why it looked like a
+                  // zoom bug. A short desktop window has a phone's problem.
+                  //
+                  // `min()` makes this safe on a tall window: 34dvh there is
+                  // larger than the requested height, so the requested height
+                  // wins and nothing changes. The cap only ever bites when the
+                  // viewport is genuinely too short for the size asked for.
+                  ...!isMinimized && children ? {
                     flex: "1 1 auto",
                     maxHeight: `min(${currentHeight}px, 34dvh)`,
-                    minHeight: "min(160px, 20dvh)"
+                    minHeight: `min(160px, 20dvh, ${currentHeight}px)`
                   } : { height: `${currentHeight}px`, flexShrink: 0 },
                   maxWidth: "100%",
                   display: "flex",

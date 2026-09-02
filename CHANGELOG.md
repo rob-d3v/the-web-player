@@ -4,6 +4,25 @@ All notable changes to `ania-avatar-react` are documented here.
 
 ## [Unreleased]
 
+### Fixed — the avatar stage cap was gated on the wrong dimension
+1.13.0 capped the avatar so the conversation could own the screen, and gated
+that cap on `isMobile` — which asks about viewport WIDTH. The thing that runs
+out is HEIGHT.
+
+Reported from a desktop browser at 100% zoom on a window about 930px tall: the
+stage is a fixed 400px, 43% of the screen, nothing below it may shrink, and the
+chat is unusable. The user worked around it by dropping the browser to 50%
+zoom, where the viewport reports ~1860px and the same 400px is 21%. It looked
+like a zoom bug; it was a short window. A short desktop window has a phone's
+problem, and the width test excluded it.
+
+The cap now applies whenever the chat is open, at any width. `min()` keeps it
+safe on a tall window: 34dvh there exceeds the requested height, so the
+requested height wins and nothing changes. The cap only bites when the viewport
+is genuinely too short for the size asked for. Measured at 1100x929 with the
+chat open: stage 400px → 160px, chat area 70% of the column.
+
+
 ### Fixed — the runtime wait timed out on tick count, not on time
 The 15-second bound added in 1.13.0 counted interval callbacks
 (`waited += 100`) and assumed each one arrived 100 ms after the last. A
