@@ -4,6 +4,15 @@ All notable changes to `ania-avatar-react` are documented here.
 
 ## [Unreleased]
 
+### Fixed — the runtime wait timed out on tick count, not on time
+The 15-second bound added in 1.13.0 counted interval callbacks
+(`waited += 100`) and assumed each one arrived 100 ms after the last. A
+background or hidden tab is throttled to roughly one timer callback per
+MINUTE, so on the tab a phone user had switched away from, "15 seconds"
+became about two and a half hours — which is precisely the situation the
+bound existed to handle. It measures elapsed wall-clock time now.
+
+
 ### Fixed — the mouth no longer hangs open after a sentence
 The silence branch walked to the closed-mouth frame at up to 3 frames per tick,
 which makes the close time proportional to the DISTANCE — and the distance is

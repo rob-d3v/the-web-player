@@ -915,7 +915,13 @@ const AniaAvatarPlayer = forwardRef(({
       // A missing global is not a slow global: the script tag either resolves or
       // it does not. Give it a real window, then call it what it is, so the
       // failure path (which does un-minimise) can run.
-      let waited = 0;
+      // Wall clock, NOT a tick count. Counting `waited += TICK` assumes the
+      // interval actually fires every TICK ms, and it does not: a background or
+      // hidden tab is throttled to roughly one timer callback per minute, so a
+      // tick-counted "15 s" became two and a half HOURS on a tab the user had
+      // switched away from — which is exactly when a phone user leaves a page
+      // sitting. Elapsed time is the thing being measured, so measure it.
+      const waitStartedAt = Date.now();
       const checkInterval = setInterval(() => {
         if (window.AniaPlayer) {
           console.log('[AniaAvatar] AniaPlayer found after wait!');
@@ -923,8 +929,7 @@ const AniaAvatarPlayer = forwardRef(({
           loadAvatar();
           return;
         }
-        waited += PLAYER_WAIT_TICK_MS;
-        if (waited >= PLAYER_WAIT_TIMEOUT_MS) {
+        if (Date.now() - waitStartedAt >= PLAYER_WAIT_TIMEOUT_MS) {
           clearInterval(checkInterval);
           console.error(
             '[AniaAvatar] window.AniaPlayer never appeared after ' +

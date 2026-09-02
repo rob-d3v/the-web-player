@@ -13278,7 +13278,7 @@ const AniaAvatarPlayer = forwardRef(({
       loadAvatar();
     } else {
       console.log("[AniaAvatar] Waiting for AniaPlayer script...");
-      let waited = 0;
+      const waitStartedAt = Date.now();
       const checkInterval = setInterval(() => {
         if (window.AniaPlayer) {
           console.log("[AniaAvatar] AniaPlayer found after wait!");
@@ -13286,8 +13286,7 @@ const AniaAvatarPlayer = forwardRef(({
           loadAvatar();
           return;
         }
-        waited += PLAYER_WAIT_TICK_MS;
-        if (waited >= PLAYER_WAIT_TIMEOUT_MS) {
+        if (Date.now() - waitStartedAt >= PLAYER_WAIT_TIMEOUT_MS) {
           clearInterval(checkInterval);
           console.error(
             "[AniaAvatar] window.AniaPlayer never appeared after " + PLAYER_WAIT_TIMEOUT_MS / 1e3 + 's. Is <script src=".../aniaplayer.min.js"> present on the host page and returning 200?'
