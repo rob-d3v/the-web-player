@@ -28,7 +28,7 @@
     "preview": "vite preview",
     "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs && node examples/test-lip-sync-picker.mjs && node examples/test-frame-rate.mjs && node examples/test-lip-dsp.mjs && node examples/test-lip-animator.mjs && node examples/test-openness-map.mjs && node examples/test-device-id.mjs",
     "test:tts": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/index.js')||!fs.existsSync('dist/index.cjs')){console.error('dist/ ausente ou incompleto. Este pacote NAO se compila na publicacao: o dist vem pronto do repo privado via sync_web_player.py. Rode a distribuicao em vez de publicar a mao.');process.exit(1);}\""
   },
   "peerDependencies": {
     "react": ">=17.0.0",
