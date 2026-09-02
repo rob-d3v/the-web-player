@@ -4,6 +4,27 @@ All notable changes to `ania-avatar-react` are documented here.
 
 ## [Unreleased]
 
+### Fixed — the pinned flow question painted over the input bar
+Measured live at 1536x674 with a long answer on screen: the flow region was
+180px tall, its pinned question header 218px, and the region had
+`overflow: visible` — so 49px of text rendered straight over the text field
+below it, which is what "the chat is unusable" looked like.
+
+The header was `flexShrink: 0`. "Never scrolled away" was the intent; what that
+declaration actually says is "keep full natural height no matter how little
+room exists", and a long question makes that height larger than the space it
+has. It is bounded and scrollable now, and the region clips.
+
+### Added — `avatarMaxHeightVh`
+How much of the viewport's HEIGHT the avatar stage may take once the chat is
+open, as a percentage; default 34, clamped to 12-80. The requested `height`
+still wins whenever it is smaller, so a tall screen is unaffected.
+
+This was hardcoded, which meant tuning it for one app was a release for all
+eleven. README documents how to find your number from the browser console
+without deploying anything.
+
+
 ### Fixed — the avatar stage cap was gated on the wrong dimension
 1.13.0 capped the avatar so the conversation could own the screen, and gated
 that cap on `isMobile` — which asks about viewport WIDTH. The thing that runs

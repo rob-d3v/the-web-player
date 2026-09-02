@@ -8,6 +8,9 @@ import { THEMES } from '../constants/themes.js';
 // define `window.AniaPlayer` before declaring it absent. Generous: a cold cache
 // on a slow phone can take several seconds. Finite: it either loads or it does
 // not, and a widget that waits forever is a widget that never reports the fault.
+const STAGE_MAX_VH_FLOOR = 12;
+const STAGE_MAX_VH_CEIL = 80;
+
 const PLAYER_WAIT_TICK_MS = 100;
 const PLAYER_WAIT_TIMEOUT_MS = 15000;
 import { createTranslator } from '../i18n/index.js';
@@ -141,6 +144,15 @@ const AniaAvatarPlayer = forwardRef(({
   lipSyncAudioRef = null,
   lipSyncHook = null,
   onLoad,
+  // How much of the viewport's HEIGHT the avatar stage may occupy once the chat
+  // is open, as a percentage. Below this the requested `height` wins, so on a
+  // tall screen the number never comes into play; it only binds when the window
+  // is too short for the size asked for.
+  //
+  // 34 is the shipped default. Lower it when the chat matters more than the
+  // face — a flow with many options, or a host whose users run short windows.
+  // Anything under 12 stops reading as a face at all, so it is floored there.
+  avatarMaxHeightVh = 34,
   // Fired when the avatar cannot be shown at all: the runtime never arrived,
   // the .ania failed to load, or its frames are unusable. A host needs this to
   // keep working without a face — `AvatarChatbot` uses it to open the chat
@@ -1137,6 +1149,13 @@ const AniaAvatarPlayer = forwardRef(({
   };
   const currentWidth = currentDimensions.width;
   const currentHeight = currentDimensions.height;
+  // Clamped rather than trusted: a host passing 0, 300 or a string would
+  // otherwise produce a stage that vanishes or swallows the page.
+  const stageMaxVh = (() => {
+    const n = Number(avatarMaxHeightVh);
+    if (!Number.isFinite(n)) return 34;
+    return Math.min(STAGE_MAX_VH_CEIL, Math.max(STAGE_MAX_VH_FLOOR, n));
+  })();
   const currentTheme = THEMES[theme] || THEMES.dark;
   const isMobileMinimized = isMobile && isMinimized;
 
@@ -1351,8 +1370,8 @@ const AniaAvatarPlayer = forwardRef(({
                   ...((!isMinimized && children)
                     ? {
                         flex: "1 1 auto",
-                        maxHeight: `min(${currentHeight}px, 34dvh)`,
-                        minHeight: `min(160px, 20dvh, ${currentHeight}px)`
+                        maxHeight: `min(${currentHeight}px, ${stageMaxVh}dvh)`,
+                        minHeight: `min(160px, ${Math.round(stageMaxVh * 0.6)}dvh, ${currentHeight}px)`
                       }
                     : { height: `${currentHeight}px`, flexShrink: 0 }),
                   maxWidth: "100%",

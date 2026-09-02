@@ -122,6 +122,7 @@ Full chatbot with avatar, TTS, STT, file uploads, and webhook integration.
 | `draggable` | `boolean` | `true` | Allow drag when minimized |
 | `mobileMinimizedSize` | `number` | `60` | Minimized size on mobile (px) |
 | `mobileBreakpoint` | `number` | `768` | Mobile breakpoint (px) |
+| `avatarMaxHeightVh` | `number` | `34` | Share of viewport **height** the avatar stage may take once the chat is open. See below. |
 
 #### Animation Props
 
@@ -447,6 +448,41 @@ flows without React. A demo flow + sanity test live under `examples/`.
 | `onToggleMinimize` | `(isMinimized: boolean) => void` | Minimize state changed |
 
 ---
+
+#### Sizing the avatar against the chat — `avatarMaxHeightVh`
+
+`width`/`height` say how big the avatar should be. `avatarMaxHeightVh` says how
+much of the **screen's height** it may take once the chat is open, and the
+smaller of the two wins:
+
+```
+actual stage height = min(height, avatarMaxHeightVh% of the viewport height)
+```
+
+So on a tall screen the number never comes into play — `height` is smaller and
+`height` wins. It only binds when the window is too short for the size asked
+for, which is the case this exists for: a 400px avatar in a 930px-tall browser
+window is 43% of the screen, and with the input bar and a flow's options also
+needing room, the conversation is left with a sliver.
+
+**Finding your number.** Open the chat, then in the browser console:
+
+```js
+// the avatar stage is the canvas's parent
+document.querySelector('canvas').parentElement.style.maxHeight = '22dvh';
+```
+
+Try values until it looks right on your shortest realistic window, then pass
+that number as the prop. There is no need to redeploy to experiment.
+
+```jsx
+<AvatarChatbot avatarUrl={url} height={400} avatarMaxHeightVh={22} />
+```
+
+Guidance: `34` (default) suits a chat that is mostly free text. Drop to `20-25`
+when a flow with several option chips is the main path, because those chips are
+competing for the same vertical space. Values are clamped to `12-80`; below 12
+the face stops reading as a face.
 
 ### `<AniaAvatar />`
 

@@ -12586,6 +12586,8 @@ const buildOpennessMap = (keyframes, talkLow, talkHigh) => {
   }
   return result;
 };
+const STAGE_MAX_VH_FLOOR = 12;
+const STAGE_MAX_VH_CEIL = 80;
 const PLAYER_WAIT_TICK_MS = 100;
 const PLAYER_WAIT_TIMEOUT_MS = 15e3;
 const warnedOnce = /* @__PURE__ */ new Set();
@@ -12701,6 +12703,15 @@ const AniaAvatarPlayer = forwardRef(({
   lipSyncAudioRef = null,
   lipSyncHook = null,
   onLoad,
+  // How much of the viewport's HEIGHT the avatar stage may occupy once the chat
+  // is open, as a percentage. Below this the requested `height` wins, so on a
+  // tall screen the number never comes into play; it only binds when the window
+  // is too short for the size asked for.
+  //
+  // 34 is the shipped default. Lower it when the chat matters more than the
+  // face — a flow with many options, or a host whose users run short windows.
+  // Anything under 12 stops reading as a face at all, so it is floored there.
+  avatarMaxHeightVh = 34,
   // Fired when the avatar cannot be shown at all: the runtime never arrived,
   // the .ania failed to load, or its frames are unusable. A host needs this to
   // keep working without a face — `AvatarChatbot` uses it to open the chat
@@ -13458,6 +13469,11 @@ const AniaAvatarPlayer = forwardRef(({
   };
   const currentWidth = currentDimensions.width;
   const currentHeight = currentDimensions.height;
+  const stageMaxVh = (() => {
+    const n = Number(avatarMaxHeightVh);
+    if (!Number.isFinite(n)) return 34;
+    return Math.min(STAGE_MAX_VH_CEIL, Math.max(STAGE_MAX_VH_FLOOR, n));
+  })();
   const currentTheme = THEMES[theme] || THEMES.dark;
   const isMobileMinimized = isMobile && isMinimized;
   const getContainerStyle = () => {
@@ -13658,8 +13674,8 @@ const AniaAvatarPlayer = forwardRef(({
                   // viewport is genuinely too short for the size asked for.
                   ...!isMinimized && children ? {
                     flex: "1 1 auto",
-                    maxHeight: `min(${currentHeight}px, 34dvh)`,
-                    minHeight: `min(160px, 20dvh, ${currentHeight}px)`
+                    maxHeight: `min(${currentHeight}px, ${stageMaxVh}dvh)`,
+                    minHeight: `min(160px, ${Math.round(stageMaxVh * 0.6)}dvh, ${currentHeight}px)`
                   } : { height: `${currentHeight}px`, flexShrink: 0 },
                   maxWidth: "100%",
                   display: "flex",
@@ -17313,6 +17329,10 @@ const AvatarChatbotWidget = ({
   height = 300,
   transparent = false,
   theme = "dark",
+  // Forwarded to <AniaAvatar>. Percentage of viewport HEIGHT the avatar stage
+  // may take once the chat is open; the requested `height` still wins whenever
+  // it is smaller. Lower it when the conversation matters more than the face.
+  avatarMaxHeightVh = 34,
   // How the avatar bitmap fits its stage (contain/cover/fill) — forwarded to the
   // inner AniaAvatar so a host (e.g. the site avatar tuned on /test-avatar) can
   // pin the framing it chose.
@@ -18459,6 +18479,12 @@ const AvatarChatbotWidget = ({
       minHeight: 120,
       display: "flex",
       flexDirection: "column",
+      // Clip. Without this a child taller than the region paints straight over
+      // the input bar below it — measured live at 1536x674: region 180px,
+      // question header 218px, the overflow landing on top of the text field.
+      // Every child in here either scrolls or is bounded, so clipping can only
+      // ever hide something that is already unreachable.
+      overflow: "hidden",
       // Cap the whole region so it + transcript + input bar fit small screens.
       // `dvh`, not `vh`: on mobile `vh` is the LARGE viewport, which counts the
       // space behind the browser's own chrome.
@@ -18471,10 +18497,21 @@ const AvatarChatbotWidget = ({
     },
     children: [
       // PINNED QUESTION HEADER — prominent, bold, larger; never scrolled away.
+      //
+      // "Never scrolled away" was implemented as `flexShrink: 0`, which is a
+      // different promise: it says the header keeps its full natural height no
+      // matter how little room exists. A long answer makes that height larger
+      // than the region, and the surplus rendered over the input bar. Bounded
+      // and scrollable instead: the question stays pinned above the options,
+      // which is the point, and a very long one scrolls within its own box
+      // rather than escaping it.
       jsxs("div", {
         ref: flowQuestionRef,
         style: {
-          flexShrink: 0,
+          flexShrink: 1,
+          minHeight: 0,
+          maxHeight: "min(46%, 40dvh)",
+          overflowY: "auto",
           display: "flex",
           alignItems: "flex-start",
           gap: "8px",
@@ -18576,6 +18613,7 @@ const AvatarChatbotWidget = ({
       // Initial action passthrough
       initialAction,
       initialActionLoop,
+      avatarMaxHeightVh,
       onLoad: (player) => {
         setAvatarRef({ playerRef: { current: player } });
         setIsAvatarLoaded(true);

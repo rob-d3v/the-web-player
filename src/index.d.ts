@@ -106,6 +106,17 @@ export interface AniaAvatarProps {
   mobileMinimizedSize?: number;
   draggable?: boolean;
   mobileBreakpoint?: number;
+  /**
+   * How much of the viewport's HEIGHT the avatar stage may occupy once the chat
+   * is open, as a percentage. Default 34.
+   *
+   * The requested `height` still wins whenever it is the smaller of the two, so
+   * on a tall screen this never comes into play — it only binds when the window
+   * is too short for the size asked for. Lower it when the conversation matters
+   * more than the face: a flow with many options, or users on short windows.
+   * Clamped to 12-80.
+   */
+  avatarMaxHeightVh?: number;
   // Lip sync
   lipSyncEnabled?: boolean;
   lipSyncServerUrl?: string;

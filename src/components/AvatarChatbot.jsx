@@ -70,6 +70,10 @@ const AvatarChatbotWidget = ({
   height = 300,
   transparent = false,
   theme = "dark",
+  // Forwarded to <AniaAvatar>. Percentage of viewport HEIGHT the avatar stage
+  // may take once the chat is open; the requested `height` still wins whenever
+  // it is smaller. Lower it when the conversation matters more than the face.
+  avatarMaxHeightVh = 34,
   // How the avatar bitmap fits its stage (contain/cover/fill) — forwarded to the
   // inner AniaAvatar so a host (e.g. the site avatar tuned on /test-avatar) can
   // pin the framing it chose.
@@ -1435,6 +1439,12 @@ const AvatarChatbotWidget = ({
       minHeight: 120,
       display: "flex",
       flexDirection: "column",
+      // Clip. Without this a child taller than the region paints straight over
+      // the input bar below it — measured live at 1536x674: region 180px,
+      // question header 218px, the overflow landing on top of the text field.
+      // Every child in here either scrolls or is bounded, so clipping can only
+      // ever hide something that is already unreachable.
+      overflow: "hidden",
       // Cap the whole region so it + transcript + input bar fit small screens.
       // `dvh`, not `vh`: on mobile `vh` is the LARGE viewport, which counts the
       // space behind the browser's own chrome.
@@ -1447,10 +1457,21 @@ const AvatarChatbotWidget = ({
     },
     children: [
       // PINNED QUESTION HEADER — prominent, bold, larger; never scrolled away.
+      //
+      // "Never scrolled away" was implemented as `flexShrink: 0`, which is a
+      // different promise: it says the header keeps its full natural height no
+      // matter how little room exists. A long answer makes that height larger
+      // than the region, and the surplus rendered over the input bar. Bounded
+      // and scrollable instead: the question stays pinned above the options,
+      // which is the point, and a very long one scrolls within its own box
+      // rather than escaping it.
       jsxs("div", {
         ref: flowQuestionRef,
         style: {
-          flexShrink: 0,
+          flexShrink: 1,
+          minHeight: 0,
+          maxHeight: "min(46%, 40dvh)",
+          overflowY: "auto",
           display: "flex",
           alignItems: "flex-start",
           gap: "8px",
@@ -1553,6 +1574,7 @@ const AvatarChatbotWidget = ({
       // Initial action passthrough
       initialAction,
       initialActionLoop,
+      avatarMaxHeightVh,
       onLoad: (player) => {
         setAvatarRef({ playerRef: { current: player } });
         setIsAvatarLoaded(true);
