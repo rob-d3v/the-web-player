@@ -225,6 +225,9 @@ function applyCapture(collected, option) {
  * An optional `seed` pre-populates `collected` (used to seed known-user context
  * and/or restored persistence so the flow already knows the visitor).
  */
+/** Shared empty effect list, so an emitting-nothing transition is referentially stable. */
+const NO_EFFECTS = [];
+
 export function initialState(seed) {
   return {
     currentNodeId: null,
@@ -233,7 +236,36 @@ export function initialState(seed) {
     done: false,
     escalated: false,
     inputError: null,
+    __effects: NO_EFFECTS,
+    __effectSeq: 0,
   };
+}
+
+/**
+ * Fold a `flowReducer` result into the state a React `useReducer` should hold,
+ * carrying the emitted effects FORWARD IN STATE under a monotonic sequence
+ * number.
+ *
+ * Why this exists: React may run a reducer more than once for a single dispatch
+ * — it double-invokes under StrictMode, and it re-derives pending updates when
+ * a concurrent render is restarted. The hook used to push each run's effects
+ * into a ref, so those extra runs queued ANOTHER copy of the same `message` and
+ * `speak`, and the node's prompt rendered (and was spoken) twice.
+ *
+ * Because the sequence number is derived from the PREVIOUS state rather than
+ * from a counter on the side, running this twice for the same dispatch produces
+ * the same seq — and the consumer, which flushes each seq once, sees one turn.
+ *
+ * @param {object} prevState  the state the reducer ran against
+ * @param {{state:object, effects:Array}} result  a `flowReducer` return value
+ */
+export function attachEffects(prevState, result) {
+  const prevSeq = (prevState && prevState.__effectSeq) || 0;
+  const nextState = (result && result.state) || initialState();
+  const effects = (result && result.effects) || NO_EFFECTS;
+  return effects.length === 0
+    ? { ...nextState, __effects: NO_EFFECTS, __effectSeq: prevSeq }
+    : { ...nextState, __effects: effects, __effectSeq: prevSeq + 1 };
 }
 
 /**

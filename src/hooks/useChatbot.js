@@ -18,12 +18,34 @@ function resolveGenericError(translate) {
 
 // A 5xx (server) or a network/CORS failure (fetch rejects → no response object)
 // is transient and worth a single silent retry — it masks backend cold-starts.
-// A 4xx is the caller's fault and is NOT retried.
+// A 4xx is the caller's fault and is NOT retried, with two exceptions that are
+// explicitly "come back in a moment", not "your request is wrong":
+//   429 — the agent gateway's per-window rate limit. It fires in bursts (the
+//         Oracle gateway logged 40 of them in one afternoon) and the visitor
+//         got an apology bubble for something a second of patience fixes.
+//   408 — request timeout.
 function isRetriable(status) {
-  return status == null || status >= 500;
+  return status == null || status >= 500 || status === 429 || status === 408;
 }
 
 const RETRY_DELAY_MS = 1200;
+// Ceiling for an honoured Retry-After. A gateway asking for 60s is really
+// saying "not today": waiting that long with a spinner is worse than the
+// friendly error, so we cap and let the apology bubble through.
+const RETRY_AFTER_MAX_MS = 6000;
+
+// Parse a Retry-After header (delta-seconds or HTTP-date) into ms, or null.
+function retryAfterMs(response) {
+  try {
+    const raw = response && response.headers && response.headers.get('Retry-After');
+    if (!raw) return null;
+    const secs = Number(raw);
+    if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, RETRY_AFTER_MAX_MS);
+    const when = Date.parse(raw);
+    if (!Number.isNaN(when)) return Math.min(Math.max(0, when - Date.now()), RETRY_AFTER_MAX_MS);
+  } catch (_) { /* header access can throw on exotic Response polyfills */ }
+  return null;
+}
 
 export const useChatbot = ({
   webhookUrl,
@@ -207,6 +229,7 @@ export const useChatbot = ({
         if (!response.ok) {
           const e = new Error(`HTTP ${response.status}: ${response.statusText}`);
           e.status = response.status;
+          e.retryAfterMs = retryAfterMs(response);
           throw e;
         }
         return response;
@@ -220,8 +243,11 @@ export const useChatbot = ({
         // backend cold-starts that lost first-leads in the canary. A 4xx is the
         // request's fault and is surfaced immediately.
         if (!isRetriable(firstErr.status)) throw firstErr;
-        console.error('[useChatbot] webhook failed, retrying once in ' + RETRY_DELAY_MS + 'ms:', firstErr);
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        // A rate limiter that tells us when to come back is worth obeying;
+        // otherwise the flat cold-start delay.
+        const waitMs = firstErr.retryAfterMs != null ? firstErr.retryAfterMs : RETRY_DELAY_MS;
+        console.error('[useChatbot] webhook failed, retrying once in ' + waitMs + 'ms:', firstErr);
+        await new Promise((r) => setTimeout(r, waitMs));
         response = await attempt();
       }
 

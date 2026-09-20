@@ -12,6 +12,7 @@
 
 import { useReducer, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
+  attachEffects,
   flowReducer,
   initialState,
   getNode,
@@ -110,6 +111,7 @@ function isConsented(v) {
  * @param {boolean} [deps.persist=true]   Persist { collected, currentNodeId } to localStorage (returning visitor).
  * @param {string} [deps.persistKey]      Override the localStorage key (default `ania-flow-<appId|flowId>`).
  * @param {string} [deps.consentKey]      A `collected` key gating persistence — only write once `collected[consentKey]` is truthy (LGPD).
+ * @param {(text:string, info:object)=>void} [deps.onUserTurn]  The visitor's OWN answer (tapped bubble label / typed value), so the host can echo it in the transcript.
  */
 export function useFlowEngine(flowDef, deps = {}) {
   const {
@@ -118,6 +120,7 @@ export function useFlowEngine(flowDef, deps = {}) {
     onCapture,
     onEscalate,
     onPrompt,
+    onUserTurn,
     appId,
     lang,
     translate,
@@ -163,6 +166,7 @@ export function useFlowEngine(flowDef, deps = {}) {
   const onCaptureRef = useRef(onCapture);
   const onEscalateRef = useRef(onEscalate);
   const onPromptRef = useRef(onPrompt);
+  const onUserTurnRef = useRef(onUserTurn);
   const translateRef = useRef(translate);
   const langRef = useRef(lang);
   const appIdRef = useRef(appId);
@@ -172,6 +176,7 @@ export function useFlowEngine(flowDef, deps = {}) {
     onCaptureRef.current = onCapture;
     onEscalateRef.current = onEscalate;
     onPromptRef.current = onPrompt;
+    onUserTurnRef.current = onUserTurn;
     translateRef.current = translate;
     langRef.current = lang;
     appIdRef.current = appId;
@@ -247,22 +252,28 @@ export function useFlowEngine(flowDef, deps = {}) {
   const seedRef = useRef(seed);
   useEffect(() => { seedRef.current = seed; }, [seed]);
 
-  // Reducer wrapper: each dispatch advances state AND runs the emitted effects.
-  // We keep effects out of render by running them inside the reducer's
-  // commit via a microtask queue collected on the side.
-  const pendingEffectsRef = useRef([]);
+  // Reducer wrapper: each dispatch advances state AND carries the emitted
+  // effects FORWARD IN STATE, together with a monotonic sequence number.
+  //
+  // They used to be pushed into a ref from inside this wrapper, which made the
+  // reducer impure. React is allowed to run a reducer more than once for a
+  // single dispatch — it double-invokes in StrictMode, and it re-derives
+  // pending updates whenever a concurrent render is restarted — so every extra
+  // run appended ANOTHER copy of the same `message`/`speak` effect. That is the
+  // duplicated bubble (and the double TTS) the operator reported: the node's
+  // prompt rendered twice, once pinned and once in the transcript.
+  //
+  // Carrying them in state keeps the reducer pure: re-running it recomputes the
+  // SAME effects with the SAME seq, and the flush below runs each seq once.
   const consentKeyRef = useRef(consentKey);
   useEffect(() => { consentKeyRef.current = consentKey; });
   const reducer = useCallback((state, action) => {
-    const { state: nextState, effects } = flowReducer(state, action, flowDef, {
+    const result = flowReducer(state, action, flowDef, {
       translate: translateRef.current,
       seed: seedRef.current,
       consentKey: consentKeyRef.current,
     });
-    if (effects && effects.length) {
-      pendingEffectsRef.current.push(...effects);
-    }
-    return nextState;
+    return attachEffects(state, result);
   }, [flowDef]);
 
   // Seed the initial reducer state with the known-user/restored context so the
@@ -275,15 +286,21 @@ export function useFlowEngine(flowDef, deps = {}) {
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; });
 
-  // Flush queued effects after each committed state change. Running effects in
-  // an effect (not during reducer) keeps the reducer pure and avoids
-  // double-invocation under React StrictMode's intentional re-runs.
+  // Flush the COMMITTED state's effects, exactly once per sequence number.
+  //
+  // The ref guard is what makes this exactly-once: StrictMode runs a mounting
+  // effect twice (setup → cleanup → setup) with the same ref, and a committed
+  // state can be re-rendered for unrelated reasons. Either way a seq we already
+  // flushed never speaks or renders a second time.
+  const flushedSeqRef = useRef(0);
+  const effectSeq = state.__effectSeq || 0;
   useEffect(() => {
-    if (pendingEffectsRef.current.length === 0) return;
-    const queued = pendingEffectsRef.current;
-    pendingEffectsRef.current = [];
+    if (effectSeq === flushedSeqRef.current) return;
+    flushedSeqRef.current = effectSeq;
+    const queued = state.__effects;
+    if (!queued || queued.length === 0) return;
     for (const eff of queued) runEffect(eff);
-  });
+  }, [effectSeq, state.__effects, runEffect]);
 
   // Enter the flow once on mount (and whenever the flow identity changes).
   // RETURNING visitor: when consented persistence exists, RESUME at the saved
@@ -364,7 +381,19 @@ export function useFlowEngine(flowDef, deps = {}) {
 
   const selectOption = useCallback((opt) => {
     if (!opt) return;
-    transcriptRef.current.push({ role: 'user', text: opt.label != null ? String(opt.label) : String(opt.value) });
+    const label = opt.label != null ? String(opt.label) : String(opt.value);
+    transcriptRef.current.push({ role: 'user', text: label });
+    // Echo the tapped bubble into the host's visible transcript. Without it the
+    // conversation reads as the assistant asking two different questions in a
+    // row — the visitor's own answer left no trace between them, which is
+    // exactly the "it answered twice" report from the field.
+    if (onUserTurnRef.current && label) {
+      onUserTurnRef.current(resolvePrompt(label, translateRef.current, stateRef.current.collected), {
+        kind: 'option',
+        value: opt.value,
+        nodeId: stateRef.current.currentNodeId,
+      });
+    }
     dispatch({ type: 'SELECT', option: opt });
   }, []);
 
@@ -478,6 +507,15 @@ export function useFlowEngine(flowDef, deps = {}) {
     const ok = probe.state.inputError == null;
     if (ok && trimmed) {
       transcriptRef.current.push({ role: 'user', text: trimmed });
+      // Same echo as a tapped bubble. A node can opt out with `input.echo:
+      // false` when the typed value shouldn't be repeated on screen.
+      if (onUserTurnRef.current && currentInput.echo !== false) {
+        onUserTurnRef.current(trimmed, {
+          kind: 'input',
+          key: currentInput.key,
+          nodeId: stateRef.current.currentNodeId,
+        });
+      }
     }
     return { ok, error: ok ? null : probe.state.inputError };
   }, [currentInput, flowDef]);

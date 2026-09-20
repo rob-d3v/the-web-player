@@ -2,7 +2,70 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
-## [Unreleased]
+## [1.15.0] - 2026-09-20
+
+### Fixed — the flow answered itself twice
+Reported from the field with a screenshot: the assistant asks the consent
+question, then asks the next one, and nothing on screen shows that the visitor
+answered in between.
+
+Two causes, both fixed.
+
+The transcript held assistant prompts ONLY. Tapping a bubble (or submitting a
+typed answer) advanced the flow and left no trace, so every conversation read
+as the assistant talking to itself. `useFlowEngine` now reports the visitor's
+own turn through a new `onUserTurn` callback and `AvatarChatbot` renders it as
+a user bubble. A node can opt a typed value out with `input.echo: false`.
+
+The effects were also escaping through an impure reducer. `useFlowEngine`
+pushed each transition's `message`/`speak` effects into a ref from INSIDE the
+reducer, and React is allowed to run a reducer more than once per dispatch — it
+double-invokes under StrictMode, and re-derives pending updates when a
+concurrent render restarts. Every extra run queued another copy of the same
+turn: the prompt rendered twice and was spoken twice. Effects now travel in
+state under a sequence number derived from the previous state (`attachEffects`),
+and the flush runs each sequence exactly once.
+
+### Fixed — talk frames ran faster than the fps window allowed
+Two ways the playback rate escaped the clamp the host configured.
+
+The lip-sync sweep multiplied the already-clamped interval by up to
+`maxSweepBoost` (2.237), so a loud passage played at 67 fps against a 30 fps
+ceiling. The configured rate was the sweep's FLOOR instead of its ceiling. It
+now modulates inside the window: loud passages play at the configured rate,
+quiet ones ease back toward the window's slow bound. Same sweep ratio, inside
+the window.
+
+A live `idleSpeed`/`talkSpeed` change after load called the runtime's
+`setIdleSpeed`, which divides the already-folded interval a SECOND time — the
+128 fps bug, back the moment a host changed a prop. Live changes now resolve
+through the same path the load does.
+
+### Changed — a legacy speed value is ignored instead of pinning to the ceiling
+`idleSpeed={6.4}` / `talkSpeed={5.3}` are divisors from the pre-1.13 API, not
+multipliers: against 25 fps footage they ask for 160 and 132 fps. Clamping them
+to the ceiling fixed the 128 fps, but left every app carrying the legacy preset
+playing at the FASTEST rate the window allows, and made every value above ~1.2
+indistinguishable — "the talk frames run too fast, and changing talkSpeed does
+nothing".
+
+A request beyond twice the window's ceiling is now read as what it is and
+dropped to 1: the footage plays as shot. Values inside the window are honoured
+exactly as before, and a clamped or ignored value warns once per load, naming
+the range that does have an effect. `fpsClamp={false}` still takes the number
+verbatim.
+
+### Fixed — a rate-limited agent showed the apology bubble immediately
+`useChatbot` retried 5xx and network failures but treated 429 as the caller's
+fault. The agent gateway rate-limits per 60s window and fires in bursts (40 in
+one afternoon on the Oracle gateway), so visitors got an apology for something
+a second of patience fixes. 429 and 408 now get the same single retry, honouring
+`Retry-After` up to 6s.
+
+## [1.14.0]
+
+These entries accumulated under `Unreleased` across the 1.13.0 and 1.14.0
+releases without being split per version; they are all shipped.
 
 ### Fixed — the pinned flow question painted over the input bar
 Measured live at 1536x674 with a long answer on screen: the flow region was

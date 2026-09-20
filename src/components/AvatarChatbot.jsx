@@ -762,6 +762,23 @@ const AvatarChatbotWidget = ({
         },
       ]);
     },
+    // The visitor's own answer (tapped bubble / typed value). Without this the
+    // transcript held assistant prompts ONLY, so two consecutive questions read
+    // as the assistant answering itself twice — nothing on screen showed that
+    // the visitor had replied in between.
+    onUserTurn: (text) => {
+      if (!text) return;
+      setSystemMessages((prev) => [
+        ...prev,
+        {
+          id: "flowans-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+          role: "user",
+          content: text,
+          timestamp: (new Date()).toISOString(),
+          isFlowAnswer: true,
+        },
+      ]);
+    },
   });
 
   // Expose the flow's goto() to the command runner (the `flow <nodeId>` verb).
@@ -961,26 +978,12 @@ const AvatarChatbotWidget = ({
     ? allMessages.filter((m) => m.id !== lastFlowPromptId)
     : allMessages;
 
-  // ---- Scroll behavior ----
-  // Scroll the transcript to the latest message. This runs in BOTH modes.
-  //
-  // It used to bail out whenever a flow node was live, because back then the
-  // question and its options lived inside the transcript and scrolling to the
-  // bottom buried the question under them. v1.7.1 moved both out into
-  // `flowInteractionRegion` (see the pinned-question block below), and the bail
-  // was left behind. The cost: with a flow node live, nothing scrolled the
-  // transcript at all — the effect underneath only fires when the NODE changes,
-  // and sending a message does not change the node. Measured at 478x826: the
-  // transcript sat at scrollTop 0 with 24px of content below the fold, so the
-  // user's own message rendered 19px past the visible edge and was read as
-  // "it cut my blue bubble off".
-  //
-  // `block: 'end'` rather than the default so it scrolls the transcript to its
-  // own bottom instead of scrolling ancestors to centre the sentinel.
+  // Free chat follows new messages; flow navigation reveals its current question.
+  // Avoid simultaneous scroll-to-bottom and scroll-to-question animations.
   const flowNodeId2 = flowNode ? flowNode.id : null;
   useEffect(() => {
     var _a;
-    (_a = messagesEndRef.current) == null ? void 0 : _a.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (!flowNodeActive) (_a = messagesEndRef.current) == null ? void 0 : _a.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [allMessages, flowNodeActive]);
 
   // On each NEW live flow node, bring the pinned question to the TOP of the
@@ -1420,58 +1423,21 @@ const AvatarChatbotWidget = ({
     ]
   }) : null;
 
-  // ── Flow INTERACTION region ─────────────────────────────────────────────────
-  // Rendered as a sibling BELOW the scrollable transcript whenever a flow node
-  // is live. It pins the CURRENT QUESTION at the top (prominent, always visible)
-  // and puts the answer affordances (option bubbles OR typed input) in their own
-  // independently-scrolling sub-area below it. This is the fix for the operator's
-  // bug: the options can never scroll the question out of view, and the question
-  // reads first. Backward-compatible: null when no flow node is active.
+  // Keep the current question and answers in the conversation's single scroller.
+  // Nested scroll areas compete for the same small mobile viewport.
   const flowInteractionRegion = flowNodeActive ? jsxs("div", {
     style: {
-      // Shrinkable, not rigid. This region already has its own scrolling
-      // sub-area for the answer affordances, but that scroller never engaged:
-      // with `flexShrink: 0` the region kept its full natural height and the
-      // transcript — the only flexible sibling — absorbed the entire squeeze.
-      // Measured at 478x826 with six options: region 246px, transcript 168px.
-      // The answers scroll now instead of the conversation disappearing.
-      flexShrink: 1,
-      minHeight: 120,
-      display: "flex",
-      flexDirection: "column",
-      // Clip. Without this a child taller than the region paints straight over
-      // the input bar below it — measured live at 1536x674: region 180px,
-      // question header 218px, the overflow landing on top of the text field.
-      // Every child in here either scrolls or is bounded, so clipping can only
-      // ever hide something that is already unreachable.
-      overflow: "hidden",
-      // Cap the whole region so it + transcript + input bar fit small screens.
-      // `dvh`, not `vh`: on mobile `vh` is the LARGE viewport, which counts the
-      // space behind the browser's own chrome.
-      maxHeight: `min(55dvh, max(180px, calc(100dvh - ${height + 140}px)))`,
-      margin: "0 0 4px",
-      padding: "10px 12px 4px",
-      borderTop: "1px solid rgba(0,0,0,0.06)",
-      background: "linear-gradient(180deg, rgba(99,102,241,0.06) 0%, rgba(99,102,241,0) 100%)",
+      margin: "8px 0 4px",
+      padding: "10px 0 4px",
       boxSizing: "border-box"
     },
     children: [
-      // PINNED QUESTION HEADER — prominent, bold, larger; never scrolled away.
-      //
-      // "Never scrolled away" was implemented as `flexShrink: 0`, which is a
-      // different promise: it says the header keeps its full natural height no
-      // matter how little room exists. A long answer makes that height larger
-      // than the region, and the surplus rendered over the input bar. Bounded
-      // and scrollable instead: the question stays pinned above the options,
-      // which is the point, and a very long one scrolls within its own box
-      // rather than escaping it.
+      // Current question appears once, immediately before its answer controls.
       jsxs("div", {
         ref: flowQuestionRef,
         style: {
-          flexShrink: 1,
-          minHeight: 0,
-          maxHeight: "min(46%, 40dvh)",
-          overflowY: "auto",
+          flexShrink: 0,
+          minWidth: 0,
           display: "flex",
           alignItems: "flex-start",
           gap: "8px",
@@ -1511,17 +1477,9 @@ const AvatarChatbotWidget = ({
           })
         ]
       }),
-      // SCROLLABLE ANSWERS — options/input scroll here; the question stays put.
+      // Answers follow their question, sharing the transcript's scroll position.
       jsx("div", {
-        className: "ania-chat-scroll",
-        style: {
-          flex: "1 1 auto",
-          minHeight: 0,
-          overflowY: "auto",
-          overflowX: "hidden",
-          WebkitOverflowScrolling: "touch",
-          paddingRight: "2px"
-        },
+        style: { padding: "2px 2px 8px" },
         children: flow_.currentInput ? flowInputElement : flowOptionsElement
       })
     ]
@@ -1601,16 +1559,12 @@ const AvatarChatbotWidget = ({
             className: "ania-chat-scroll",
             style: {
               flex: "1 1 auto",
-              // A real floor, not 60px. The transcript used to be the only
-              // shrinkable block in the column, so every rigid sibling took its
-              // space and it collapsed to 168px — a fifth of the screen for the
-              // conversation itself. Now that the avatar and the flow region
-              // both give way, this floor is what stops the squeeze here.
-              minHeight: "min(180px, 24dvh)",
+              // The conversation shares the remaining viewport with the avatar.
+              minHeight: 0,
               // Growth cap only — when space is tight the flex parent (which is
               // clamped to the viewport) shrinks this area, so the input bar is
               // never pushed off screen.
-              maxHeight: flowNodeActive ? "min(320px, 40dvh)" : "min(420px, 48dvh)",
+              maxHeight: "min(520px, 60dvh)",
               overflowY: "auto",
               padding: "14px 14px 6px",
               WebkitOverflowScrolling: "touch",
@@ -1618,7 +1572,7 @@ const AvatarChatbotWidget = ({
             },
             children: [
               // Lista de mensagens (transcript). The CURRENT flow question is
-              // pinned in its own header below, so it's filtered out here.
+              // shown once with its answer controls below, so it's filtered out here.
               // Messages by the same sender are GROUPED: the name renders once
               // per run and bubbles inside a run sit closer together.
               transcriptMessages.map((msg, idx) => {
@@ -1703,12 +1657,6 @@ const AvatarChatbotWidget = ({
                 });
               }),
 
-              // NOTE: the flow QUESTION + answer affordances (option bubbles /
-              // typed input) are no longer rendered inside this scrollable
-              // transcript. They live in `flowInteractionRegion` below — a
-              // sibling that pins the current question at the top and lets only
-              // the answers scroll, so the question is never buried (v1.7.1).
-
               // Loading indicator
               isLoading && jsx("div", {
                 className: "ania-msg-in",
@@ -1751,14 +1699,10 @@ const AvatarChatbotWidget = ({
                 })
               }),
 
+              flowInteractionRegion,
               jsx("div", { ref: messagesEndRef })
             ]
           }),
-
-          // ========== FLOW: QUESTION PINNED + SCROLLABLE ANSWERS ==========
-          // Sibling below the transcript. Pins the current question at the top
-          // (prominent) and scrolls only the options/input below it (v1.7.1 fix).
-          flowInteractionRegion,
 
           // ========== BOTÃO ENABLE SOUND ==========
           enableTTS && !ttsEnabled && jsx("div", {

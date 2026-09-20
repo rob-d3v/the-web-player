@@ -12221,6 +12221,17 @@ const resolveNativeFps = (avatarData) => {
   }
   return { fps: FPS_FALLBACK, source: "fallback" };
 };
+const LEGACY_SPEED_FPS_FACTOR = 2;
+const resolveSpeed = ({ nativeFps, speed = 1, clamp: clamp2 = FPS_CLAMP_DEFAULT } = {}) => {
+  const fps = isPositiveFinite(nativeFps) ? nativeFps : FPS_FALLBACK;
+  const s = isPositiveFinite(speed) ? speed : 1;
+  const requestedFps = fps * s;
+  if (!clamp2) return { speed: s, requestedFps, legacy: false };
+  if (requestedFps > clamp2.max * LEGACY_SPEED_FPS_FACTOR) {
+    return { speed: 1, requestedFps, legacy: true };
+  }
+  return { speed: s, requestedFps, legacy: false };
+};
 const frameIntervalMs = ({
   nativeFps,
   speed = 1,
@@ -12735,6 +12746,7 @@ const AniaAvatarPlayer = forwardRef(({
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
   const isLoadingRef = useRef(false);
+  const playbackBasisRef = useRef(null);
   const canvasObserverRef = useRef(null);
   const styleTagRef = useRef(null);
   const enforcingRef = useRef(false);
@@ -13058,19 +13070,35 @@ const AniaAvatarPlayer = forwardRef(({
         }
         if (typeof idleSpeed === "number" && idleSpeed > 0) finalIdleSpeed = idleSpeed;
         if (typeof talkSpeed === "number" && talkSpeed > 0) finalTalkSpeed = talkSpeed;
+        playbackBasisRef.current = { nativeFps, clamp: clampCfg };
+        const idleReq = resolveSpeed({ nativeFps, speed: finalIdleSpeed, clamp: clampCfg });
+        const talkReq = resolveSpeed({ nativeFps, speed: finalTalkSpeed, clamp: clampCfg });
         const idleIntervalMs = frameIntervalMs({
           nativeFps,
-          speed: finalIdleSpeed,
+          speed: idleReq.speed,
           clamp: clampCfg
         });
         const talkIntervalMs = frameIntervalMs({
           nativeFps,
-          speed: finalTalkSpeed,
+          speed: talkReq.speed,
           clamp: clampCfg
         });
         console.log(
           `[AniaAvatar] fps ${nativeFps.toFixed(2)} (${fpsSource}) → idle ${(1e3 / idleIntervalMs).toFixed(1)}fps / talk ${(1e3 / talkIntervalMs).toFixed(1)}fps` + (clampCfg ? ` [clamped ${clampCfg.min}-${clampCfg.max}]` : " [unclamped]")
         );
+        if (clampCfg) {
+          const ceiling = (clampCfg.max / nativeFps).toFixed(2);
+          const explain = (label, requested, intervalMs) => {
+            const got = 1e3 / intervalMs;
+            if (Math.abs(requested.requestedFps - got) < 0.05) return;
+            const why = requested.legacy ? `is a legacy divisor, not a multiplier, so it was IGNORED and the footage plays as shot` : `was clamped by fpsClamp ${clampCfg.min}-${clampCfg.max}`;
+            console.warn(
+              `[AniaAvatar] ${label}=${requested.speed === 1 && requested.legacy ? "legacy value" : requested.speed} asks for ${requested.requestedFps.toFixed(1)}fps on ${nativeFps.toFixed(1)}fps footage; it ${why}. Playback is ${got.toFixed(1)}fps. ${label} only changes anything between ${(clampCfg.min / nativeFps).toFixed(2)} and ${ceiling} — outside that, widen or disable the window with fpsClamp={{min,max}} / fpsClamp={false}.`
+            );
+          };
+          explain("idleSpeed", idleReq, idleIntervalMs);
+          explain("talkSpeed", talkReq, talkIntervalMs);
+        }
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
         let canvasWidth = width;
         let canvasHeight = height;
@@ -13343,12 +13371,24 @@ const AniaAvatarPlayer = forwardRef(({
     if (!isLoaded) return;
     const ctrl = playerRef.current && playerRef.current.animationController;
     if (!ctrl) return;
-    if (typeof idleSpeed === "number" && idleSpeed > 0 && ctrl.setIdleSpeed) {
-      ctrl.setIdleSpeed(idleSpeed);
-    }
-    if (typeof talkSpeed === "number" && talkSpeed > 0 && ctrl.setTalkSpeed) {
-      ctrl.setTalkSpeed(talkSpeed);
-    }
+    const basis = playbackBasisRef.current;
+    const applyLive = (speed, setSlider, durationKey) => {
+      if (typeof speed !== "number" || !(speed > 0)) return;
+      if (!basis) {
+        if (setSlider) setSlider.call(ctrl, speed);
+        return;
+      }
+      const resolved = resolveSpeed({ nativeFps: basis.nativeFps, speed, clamp: basis.clamp });
+      const intervalMs = frameIntervalMs({
+        nativeFps: basis.nativeFps,
+        speed: resolved.speed,
+        clamp: basis.clamp
+      });
+      if (ctrl.configState) ctrl.configState[durationKey] = intervalMs;
+      if (setSlider) setSlider.call(ctrl, 1);
+    };
+    applyLive(idleSpeed, ctrl.setIdleSpeed, "idle_frame_duration");
+    applyLive(talkSpeed, ctrl.setTalkSpeed, "talk_cycle_duration");
   }, [idleSpeed, talkSpeed, isLoaded]);
   const getMobileSize = () => {
     if (isMobile && isMinimized) {
@@ -13561,7 +13601,8 @@ const AniaAvatarPlayer = forwardRef(({
             // The outer shell above already clamps to the viewport; matching it
             // here with a second, differently-written copy of the same number is
             // how the two drifted apart. Fill the parent instead.
-            maxHeight: isMobileMinimized ? void 0 : "100%",
+            maxHeight: isMobileMinimized ? void 0 : "calc(100dvh - 24px - env(safe-area-inset-bottom, 0px))",
+            minHeight: 0,
             overflow: !transparent || !isMobileMinimized ? "hidden" : void 0,
             ...!transparent ? {
               background: currentTheme.background,
@@ -13582,6 +13623,9 @@ const AniaAvatarPlayer = forwardRef(({
                   style: {
                     backgroundColor: transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                     padding: "6px",
+                    minWidth: "44px",
+                    minHeight: "44px",
+                    touchAction: "manipulation",
                     borderRadius: "8px",
                     transition: "background-color 0.15s",
                     backdropFilter: "blur(4px)",
@@ -13602,6 +13646,9 @@ const AniaAvatarPlayer = forwardRef(({
                   style: {
                     backgroundColor: transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                     padding: "6px",
+                    minWidth: "44px",
+                    minHeight: "44px",
+                    touchAction: "manipulation",
                     borderRadius: "8px",
                     transition: "background-color 0.15s",
                     backdropFilter: "blur(4px)",
@@ -13622,6 +13669,9 @@ const AniaAvatarPlayer = forwardRef(({
                   style: {
                     backgroundColor: transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                     padding: "6px",
+                    minWidth: "44px",
+                    minHeight: "44px",
+                    touchAction: "manipulation",
                     borderRadius: "8px",
                     transition: "background-color 0.15s",
                     backdropFilter: "blur(4px)",
@@ -13673,7 +13723,8 @@ const AniaAvatarPlayer = forwardRef(({
                   // wins and nothing changes. The cap only ever bites when the
                   // viewport is genuinely too short for the size asked for.
                   ...!isMinimized && children ? {
-                    flex: "1 1 auto",
+                    flex: "0 1 auto",
+                    height: `min(${currentHeight}px, ${stageMaxVh}dvh)`,
                     maxHeight: `min(${currentHeight}px, ${stageMaxVh}dvh)`,
                     minHeight: `min(160px, ${Math.round(stageMaxVh * 0.6)}dvh, ${currentHeight}px)`
                   } : { height: `${currentHeight}px`, flexShrink: 0 },
@@ -14781,9 +14832,22 @@ function resolveGenericError(translate) {
   return DEFAULT_GENERIC_ERROR;
 }
 function isRetriable(status) {
-  return status == null || status >= 500;
+  return status == null || status >= 500 || status === 429 || status === 408;
 }
 const RETRY_DELAY_MS = 1200;
+const RETRY_AFTER_MAX_MS = 6e3;
+function retryAfterMs(response) {
+  try {
+    const raw = response && response.headers && response.headers.get("Retry-After");
+    if (!raw) return null;
+    const secs = Number(raw);
+    if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1e3, RETRY_AFTER_MAX_MS);
+    const when = Date.parse(raw);
+    if (!Number.isNaN(when)) return Math.min(Math.max(0, when - Date.now()), RETRY_AFTER_MAX_MS);
+  } catch (_) {
+  }
+  return null;
+}
 const useChatbot = ({
   webhookUrl,
   webhookApiKey = null,
@@ -14931,6 +14995,7 @@ const useChatbot = ({
         if (!response2.ok) {
           const e = new Error(`HTTP ${response2.status}: ${response2.statusText}`);
           e.status = response2.status;
+          e.retryAfterMs = retryAfterMs(response2);
           throw e;
         }
         return response2;
@@ -14940,8 +15005,9 @@ const useChatbot = ({
         response = await attempt();
       } catch (firstErr) {
         if (!isRetriable(firstErr.status)) throw firstErr;
-        console.error("[useChatbot] webhook failed, retrying once in " + RETRY_DELAY_MS + "ms:", firstErr);
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        const waitMs = firstErr.retryAfterMs != null ? firstErr.retryAfterMs : RETRY_DELAY_MS;
+        console.error("[useChatbot] webhook failed, retrying once in " + waitMs + "ms:", firstErr);
+        await new Promise((r) => setTimeout(r, waitMs));
         response = await attempt();
       }
       const data = await response.json();
@@ -15096,6 +15162,7 @@ function applyCapture(collected, option) {
   }
   return next;
 }
+const NO_EFFECTS = [];
 function initialState(seed) {
   return {
     currentNodeId: null,
@@ -15103,8 +15170,16 @@ function initialState(seed) {
     collected: seed && typeof seed === "object" ? { ...seed } : {},
     done: false,
     escalated: false,
-    inputError: null
+    inputError: null,
+    __effects: NO_EFFECTS,
+    __effectSeq: 0
   };
+}
+function attachEffects(prevState, result) {
+  const prevSeq = prevState && prevState.__effectSeq || 0;
+  const nextState = result && result.state || initialState();
+  const effects = result && result.effects || NO_EFFECTS;
+  return effects.length === 0 ? { ...nextState, __effects: NO_EFFECTS, __effectSeq: prevSeq } : { ...nextState, __effects: effects, __effectSeq: prevSeq + 1 };
 }
 function inputAlreadyKnown(input, collected) {
   if (!input || input.key == null) return false;
@@ -15443,6 +15518,7 @@ function useFlowEngine(flowDef, deps = {}) {
     onCapture,
     onEscalate,
     onPrompt,
+    onUserTurn,
     appId,
     lang,
     translate,
@@ -15477,6 +15553,7 @@ function useFlowEngine(flowDef, deps = {}) {
   const onCaptureRef = useRef(onCapture);
   const onEscalateRef = useRef(onEscalate);
   const onPromptRef = useRef(onPrompt);
+  const onUserTurnRef = useRef(onUserTurn);
   const translateRef = useRef(translate);
   const langRef = useRef(lang);
   const appIdRef = useRef(appId);
@@ -15486,6 +15563,7 @@ function useFlowEngine(flowDef, deps = {}) {
     onCaptureRef.current = onCapture;
     onEscalateRef.current = onEscalate;
     onPromptRef.current = onPrompt;
+    onUserTurnRef.current = onUserTurn;
     translateRef.current = translate;
     langRef.current = lang;
     appIdRef.current = appId;
@@ -15547,33 +15625,32 @@ function useFlowEngine(flowDef, deps = {}) {
   useEffect(() => {
     seedRef.current = seed;
   }, [seed]);
-  const pendingEffectsRef = useRef([]);
   const consentKeyRef = useRef(consentKey);
   useEffect(() => {
     consentKeyRef.current = consentKey;
   });
   const reducer = useCallback((state2, action) => {
-    const { state: nextState, effects } = flowReducer(state2, action, flowDef, {
+    const result = flowReducer(state2, action, flowDef, {
       translate: translateRef.current,
       seed: seedRef.current,
       consentKey: consentKeyRef.current
     });
-    if (effects && effects.length) {
-      pendingEffectsRef.current.push(...effects);
-    }
-    return nextState;
+    return attachEffects(state2, result);
   }, [flowDef]);
   const [state, dispatch] = useReducer(reducer, seed, initialState);
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
   });
+  const flushedSeqRef = useRef(0);
+  const effectSeq = state.__effectSeq || 0;
   useEffect(() => {
-    if (pendingEffectsRef.current.length === 0) return;
-    const queued = pendingEffectsRef.current;
-    pendingEffectsRef.current = [];
+    if (effectSeq === flushedSeqRef.current) return;
+    flushedSeqRef.current = effectSeq;
+    const queued = state.__effects;
+    if (!queued || queued.length === 0) return;
     for (const eff of queued) runEffect(eff);
-  });
+  }, [effectSeq, state.__effects, runEffect]);
   const startedForRef = useRef(null);
   const flowKey = flowDef && (flowDef.id != null ? flowDef.id : flowDef);
   useEffect(() => {
@@ -15621,7 +15698,15 @@ function useFlowEngine(flowDef, deps = {}) {
   );
   const selectOption = useCallback((opt) => {
     if (!opt) return;
-    transcriptRef.current.push({ role: "user", text: opt.label != null ? String(opt.label) : String(opt.value) });
+    const label = opt.label != null ? String(opt.label) : String(opt.value);
+    transcriptRef.current.push({ role: "user", text: label });
+    if (onUserTurnRef.current && label) {
+      onUserTurnRef.current(resolvePrompt(label, translateRef.current, stateRef.current.collected), {
+        kind: "option",
+        value: opt.value,
+        nodeId: stateRef.current.currentNodeId
+      });
+    }
     dispatch({ type: "SELECT", option: opt });
   }, []);
   const goBack = useCallback(() => {
@@ -15681,6 +15766,13 @@ function useFlowEngine(flowDef, deps = {}) {
     const ok = probe.state.inputError == null;
     if (ok && trimmed) {
       transcriptRef.current.push({ role: "user", text: trimmed });
+      if (onUserTurnRef.current && currentInput.echo !== false) {
+        onUserTurnRef.current(trimmed, {
+          kind: "input",
+          key: currentInput.key,
+          nodeId: stateRef.current.currentNodeId
+        });
+      }
     }
     return { ok, error: ok ? null : probe.state.inputError };
   }, [currentInput, flowDef]);
@@ -17908,6 +18000,23 @@ const AvatarChatbotWidget = ({
           isFlowPrompt: true
         }
       ]);
+    },
+    // The visitor's own answer (tapped bubble / typed value). Without this the
+    // transcript held assistant prompts ONLY, so two consecutive questions read
+    // as the assistant answering itself twice — nothing on screen showed that
+    // the visitor had replied in between.
+    onUserTurn: (text) => {
+      if (!text) return;
+      setSystemMessages((prev) => [
+        ...prev,
+        {
+          id: "flowans-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+          role: "user",
+          content: text,
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+          isFlowAnswer: true
+        }
+      ]);
     }
   });
   useEffect(() => {
@@ -18066,7 +18175,7 @@ const AvatarChatbotWidget = ({
   const flowNodeId2 = flowNode ? flowNode.id : null;
   useEffect(() => {
     var _a2;
-    (_a2 = messagesEndRef.current) == null ? void 0 : _a2.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (!flowNodeActive) (_a2 = messagesEndRef.current) == null ? void 0 : _a2.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [allMessages, flowNodeActive]);
   useEffect(() => {
     if (!flowNodeActive) return;
@@ -18469,49 +18578,17 @@ const AvatarChatbotWidget = ({
   }) : null;
   const flowInteractionRegion = flowNodeActive ? jsxs("div", {
     style: {
-      // Shrinkable, not rigid. This region already has its own scrolling
-      // sub-area for the answer affordances, but that scroller never engaged:
-      // with `flexShrink: 0` the region kept its full natural height and the
-      // transcript — the only flexible sibling — absorbed the entire squeeze.
-      // Measured at 478x826 with six options: region 246px, transcript 168px.
-      // The answers scroll now instead of the conversation disappearing.
-      flexShrink: 1,
-      minHeight: 120,
-      display: "flex",
-      flexDirection: "column",
-      // Clip. Without this a child taller than the region paints straight over
-      // the input bar below it — measured live at 1536x674: region 180px,
-      // question header 218px, the overflow landing on top of the text field.
-      // Every child in here either scrolls or is bounded, so clipping can only
-      // ever hide something that is already unreachable.
-      overflow: "hidden",
-      // Cap the whole region so it + transcript + input bar fit small screens.
-      // `dvh`, not `vh`: on mobile `vh` is the LARGE viewport, which counts the
-      // space behind the browser's own chrome.
-      maxHeight: `min(55dvh, max(180px, calc(100dvh - ${height + 140}px)))`,
-      margin: "0 0 4px",
-      padding: "10px 12px 4px",
-      borderTop: "1px solid rgba(0,0,0,0.06)",
-      background: "linear-gradient(180deg, rgba(99,102,241,0.06) 0%, rgba(99,102,241,0) 100%)",
+      margin: "8px 0 4px",
+      padding: "10px 0 4px",
       boxSizing: "border-box"
     },
     children: [
-      // PINNED QUESTION HEADER — prominent, bold, larger; never scrolled away.
-      //
-      // "Never scrolled away" was implemented as `flexShrink: 0`, which is a
-      // different promise: it says the header keeps its full natural height no
-      // matter how little room exists. A long answer makes that height larger
-      // than the region, and the surplus rendered over the input bar. Bounded
-      // and scrollable instead: the question stays pinned above the options,
-      // which is the point, and a very long one scrolls within its own box
-      // rather than escaping it.
+      // Current question appears once, immediately before its answer controls.
       jsxs("div", {
         ref: flowQuestionRef,
         style: {
-          flexShrink: 1,
-          minHeight: 0,
-          maxHeight: "min(46%, 40dvh)",
-          overflowY: "auto",
+          flexShrink: 0,
+          minWidth: 0,
           display: "flex",
           alignItems: "flex-start",
           gap: "8px",
@@ -18551,17 +18628,9 @@ const AvatarChatbotWidget = ({
           })
         ]
       }),
-      // SCROLLABLE ANSWERS — options/input scroll here; the question stays put.
+      // Answers follow their question, sharing the transcript's scroll position.
       jsx("div", {
-        className: "ania-chat-scroll",
-        style: {
-          flex: "1 1 auto",
-          minHeight: 0,
-          overflowY: "auto",
-          overflowX: "hidden",
-          WebkitOverflowScrolling: "touch",
-          paddingRight: "2px"
-        },
+        style: { padding: "2px 2px 8px" },
         children: flow_.currentInput ? flowInputElement : flowOptionsElement
       })
     ]
@@ -18639,16 +18708,12 @@ const AvatarChatbotWidget = ({
             className: "ania-chat-scroll",
             style: {
               flex: "1 1 auto",
-              // A real floor, not 60px. The transcript used to be the only
-              // shrinkable block in the column, so every rigid sibling took its
-              // space and it collapsed to 168px — a fifth of the screen for the
-              // conversation itself. Now that the avatar and the flow region
-              // both give way, this floor is what stops the squeeze here.
-              minHeight: "min(180px, 24dvh)",
+              // The conversation shares the remaining viewport with the avatar.
+              minHeight: 0,
               // Growth cap only — when space is tight the flex parent (which is
               // clamped to the viewport) shrinks this area, so the input bar is
               // never pushed off screen.
-              maxHeight: flowNodeActive ? "min(320px, 40dvh)" : "min(420px, 48dvh)",
+              maxHeight: "min(520px, 60dvh)",
               overflowY: "auto",
               padding: "14px 14px 6px",
               WebkitOverflowScrolling: "touch",
@@ -18656,7 +18721,7 @@ const AvatarChatbotWidget = ({
             },
             children: [
               // Lista de mensagens (transcript). The CURRENT flow question is
-              // pinned in its own header below, so it's filtered out here.
+              // shown once with its answer controls below, so it's filtered out here.
               // Messages by the same sender are GROUPED: the name renders once
               // per run and bubbles inside a run sit closer together.
               transcriptMessages.map((msg, idx) => {
@@ -18736,11 +18801,6 @@ const AvatarChatbotWidget = ({
                   })
                 });
               }),
-              // NOTE: the flow QUESTION + answer affordances (option bubbles /
-              // typed input) are no longer rendered inside this scrollable
-              // transcript. They live in `flowInteractionRegion` below — a
-              // sibling that pins the current question at the top and lets only
-              // the answers scroll, so the question is never buried (v1.7.1).
               // Loading indicator
               isLoading && jsx("div", {
                 className: "ania-msg-in",
@@ -18782,13 +18842,10 @@ const AvatarChatbotWidget = ({
                   ]
                 })
               }),
+              flowInteractionRegion,
               jsx("div", { ref: messagesEndRef })
             ]
           }),
-          // ========== FLOW: QUESTION PINNED + SCROLLABLE ANSWERS ==========
-          // Sibling below the transcript. Pins the current question at the top
-          // (prominent) and scrolls only the options/input below it (v1.7.1 fix).
-          flowInteractionRegion,
           // ========== BOTÃO ENABLE SOUND ==========
           enableTTS && !ttsEnabled && jsx("div", {
             style: { padding: "8px 16px", flexShrink: 0 },

@@ -22,9 +22,16 @@
  *
  * Stop treating the slider as an absolute divisor. Resolve what the footage's
  * REAL frame rate is, treat the slider as a multiplier relative to that, and
- * clamp the result into a sane window (24-30 fps by default). The legacy 6.4 /
- * 5.3 / 2.8 values then all collapse onto the clamp and become no-ops, so the
- * nineteen apps that pass them need no edits.
+ * clamp the result into a sane window (24-30 fps by default), so the nineteen
+ * apps that pass the legacy values need no edits.
+ *
+ * Those legacy values first collapsed onto the clamp CEILING, which fixed the
+ * 128 fps but left every app playing at the fastest rate the window allowed and
+ * made every speed above ~1.2 indistinguishable — reported from the field as
+ * "the talk frames run too fast and changing talkSpeed does nothing". So a
+ * value that asks for more than twice the ceiling is now read as what it is, a
+ * legacy divisor, and dropped to 1: the footage plays as shot. See
+ * {@link resolveSpeed}.
  *
  * Hosts that genuinely want something else opt out explicitly with `fpsClamp`.
  *
@@ -126,6 +133,41 @@ export const resolveNativeFps = (avatarData) => {
   }
 
   return { fps: FPS_FALLBACK, source: 'fallback' };
+};
+
+/**
+ * How far past the clamp's ceiling a requested rate may sit before the speed
+ * value stops being read as a multiplier at all.
+ *
+ * The legacy values (6.4 / 5.3 / 2.8) were divisors against a millisecond
+ * duration, not multipliers against a frame rate. Against a 25 fps file they
+ * ask for 160 / 132 / 70 fps. Clamping those to the ceiling is technically
+ * "as close as we can get", but it also means the avatar always plays at the
+ * FASTEST rate the window allows, and every value above ~1.2 looks identical —
+ * the "talk frames run too fast, and changing talkSpeed does nothing" report.
+ *
+ * A request beyond this factor is therefore treated as "no opinion" and the
+ * footage plays as shot. Anything inside it is still honoured (and clamped),
+ * so a host that genuinely wants the ceiling asks for 1.2, not 5.3.
+ */
+export const LEGACY_SPEED_FPS_FACTOR = 2;
+
+/**
+ * Decide what a host/file speed multiplier actually means for this footage.
+ *
+ * @returns {{speed:number, requestedFps:number, legacy:boolean}} `legacy` true
+ *   when the value was so far outside the window that it was read as a legacy
+ *   divisor and dropped back to 1 (play as shot).
+ */
+export const resolveSpeed = ({ nativeFps, speed = 1, clamp = FPS_CLAMP_DEFAULT } = {}) => {
+  const fps = isPositiveFinite(nativeFps) ? nativeFps : FPS_FALLBACK;
+  const s = isPositiveFinite(speed) ? speed : 1;
+  const requestedFps = fps * s;
+  if (!clamp) return { speed: s, requestedFps, legacy: false };
+  if (requestedFps > clamp.max * LEGACY_SPEED_FPS_FACTOR) {
+    return { speed: 1, requestedFps, legacy: true };
+  }
+  return { speed: s, requestedFps, legacy: false };
 };
 
 /**

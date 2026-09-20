@@ -15,7 +15,7 @@ const PLAYER_WAIT_TICK_MS = 100;
 const PLAYER_WAIT_TIMEOUT_MS = 15000;
 import { createTranslator } from '../i18n/index.js';
 import { decryptAniaFile, isPlainMarketAnia, inspectAvatarFrames } from '../utils/crypto.js';
-import { resolveNativeFps, frameIntervalMs, normalizeFpsClamp } from '../utils/frame-rate.js';
+import { resolveNativeFps, frameIntervalMs, normalizeFpsClamp, resolveSpeed } from '../utils/frame-rate.js';
 import { getCachedAvatar, setCachedAvatar, deleteCachedAvatar } from '../utils/avatar-cache.js';
 import {
   fetchLipSyncConfigById,
@@ -179,6 +179,9 @@ const AniaAvatarPlayer = forwardRef(({
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
   const isLoadingRef = useRef(false);
+  // What the loaded footage actually is, kept so a LIVE speed change can be
+  // resolved the same way the load path resolved it (see the live-speed effect).
+  const playbackBasisRef = useRef(null);
   const canvasObserverRef = useRef(null);
   const styleTagRef = useRef(null);
   const enforcingRef = useRef(false);
@@ -598,14 +601,22 @@ const AniaAvatarPlayer = forwardRef(({
         // will never receive an updated aniaplayer.min.js, and an OLD runtime
         // handed an fps-correct duration with a neutral slider computes
         // `duration / 1 / 1` — i.e. exactly the right answer, with no update.
+        // A value that asks for more than twice the window's ceiling is not a
+        // multiplier, it is a legacy divisor (idleSpeed=6.4 against a 25 fps
+        // file asks for 160 fps). Reading it as "no opinion" plays the footage
+        // as shot instead of pinning every legacy app to the fastest rate the
+        // window allows — the "talk frames run too fast" report.
+        playbackBasisRef.current = { nativeFps, clamp: clampCfg };
+        const idleReq = resolveSpeed({ nativeFps, speed: finalIdleSpeed, clamp: clampCfg });
+        const talkReq = resolveSpeed({ nativeFps, speed: finalTalkSpeed, clamp: clampCfg });
         const idleIntervalMs = frameIntervalMs({
           nativeFps,
-          speed: finalIdleSpeed,
+          speed: idleReq.speed,
           clamp: clampCfg
         });
         const talkIntervalMs = frameIntervalMs({
           nativeFps,
-          speed: finalTalkSpeed,
+          speed: talkReq.speed,
           clamp: clampCfg
         });
         console.log(
@@ -613,6 +624,32 @@ const AniaAvatarPlayer = forwardRef(({
             `${(1000 / idleIntervalMs).toFixed(1)}fps / talk ${(1000 / talkIntervalMs).toFixed(1)}fps` +
             (clampCfg ? ` [clamped ${clampCfg.min}-${clampCfg.max}]` : ' [unclamped]')
         );
+
+        // Say out loud when a requested speed was clamped away. A host that
+        // passes the legacy `talkSpeed={5.3}` is asking for 132 fps against a
+        // 25 fps file; the clamp quietly delivers 30 and every value above
+        // ~1.2 then looks identical — "changing talkSpeed does nothing", which
+        // is how it was reported. One line per avatar load, naming the number
+        // that would actually make a difference.
+        if (clampCfg) {
+          const ceiling = (clampCfg.max / nativeFps).toFixed(2);
+          const explain = (label, requested, intervalMs) => {
+            const got = 1000 / intervalMs;
+            if (Math.abs(requested.requestedFps - got) < 0.05) return;
+            const why = requested.legacy
+              ? `is a legacy divisor, not a multiplier, so it was IGNORED and the footage plays as shot`
+              : `was clamped by fpsClamp ${clampCfg.min}-${clampCfg.max}`;
+            console.warn(
+              `[AniaAvatar] ${label}=${requested.speed === 1 && requested.legacy ? 'legacy value' : requested.speed} ` +
+                `asks for ${requested.requestedFps.toFixed(1)}fps on ${nativeFps.toFixed(1)}fps footage; it ${why}. ` +
+                `Playback is ${got.toFixed(1)}fps. ${label} only changes anything between ` +
+                `${(clampCfg.min / nativeFps).toFixed(2)} and ${ceiling} — outside that, widen or ` +
+                `disable the window with fpsClamp={{min,max}} / fpsClamp={false}.`
+            );
+          };
+          explain('idleSpeed', idleReq, idleIntervalMs);
+          explain('talkSpeed', talkReq, talkIntervalMs);
+        }
 
         const PlayerClass = window.AniaPlayer.AniaPlayer || window.AniaPlayer.default || window.AniaPlayer;
 
@@ -997,12 +1034,33 @@ const AniaAvatarPlayer = forwardRef(({
     if (!isLoaded) return;
     const ctrl = playerRef.current && playerRef.current.animationController;
     if (!ctrl) return;
-    if (typeof idleSpeed === 'number' && idleSpeed > 0 && ctrl.setIdleSpeed) {
-      ctrl.setIdleSpeed(idleSpeed);
-    }
-    if (typeof talkSpeed === 'number' && talkSpeed > 0 && ctrl.setTalkSpeed) {
-      ctrl.setTalkSpeed(talkSpeed);
-    }
+    // Resolve a live change through the SAME path the load used: fold the speed
+    // into a real millisecond interval against the footage's native rate and
+    // leave the runtime's slider neutral. Calling setIdleSpeed(6.4) instead
+    // would divide the already-folded interval a SECOND time — the 128 fps bug,
+    // reintroduced the moment a host changed a prop after load — and it made
+    // every legacy value land on the clamp ceiling while the load path plays
+    // the footage as shot. Two different answers for the same number.
+    const basis = playbackBasisRef.current;
+    const applyLive = (speed, setSlider, durationKey) => {
+      if (typeof speed !== 'number' || !(speed > 0)) return;
+      if (!basis) {
+        // No basis (a host driving an externally-created controller) — fall back
+        // to the runtime's own setter, which is what we always did.
+        if (setSlider) setSlider.call(ctrl, speed);
+        return;
+      }
+      const resolved = resolveSpeed({ nativeFps: basis.nativeFps, speed, clamp: basis.clamp });
+      const intervalMs = frameIntervalMs({
+        nativeFps: basis.nativeFps,
+        speed: resolved.speed,
+        clamp: basis.clamp
+      });
+      if (ctrl.configState) ctrl.configState[durationKey] = intervalMs;
+      if (setSlider) setSlider.call(ctrl, 1);
+    };
+    applyLive(idleSpeed, ctrl.setIdleSpeed, 'idle_frame_duration');
+    applyLive(talkSpeed, ctrl.setTalkSpeed, 'talk_cycle_duration');
   }, [idleSpeed, talkSpeed, isLoaded]);
 
   const getMobileSize = () => {
@@ -1254,7 +1312,8 @@ const AniaAvatarPlayer = forwardRef(({
             // The outer shell above already clamps to the viewport; matching it
             // here with a second, differently-written copy of the same number is
             // how the two drifted apart. Fill the parent instead.
-            maxHeight: isMobileMinimized ? undefined : "100%",
+            maxHeight: isMobileMinimized ? undefined : "calc(100dvh - 24px - env(safe-area-inset-bottom, 0px))",
+            minHeight: 0,
             overflow: (!transparent || !isMobileMinimized) ? 'hidden' : undefined,
             ...(
               !transparent ? {
@@ -1277,6 +1336,9 @@ const AniaAvatarPlayer = forwardRef(({
                   style: {
                     backgroundColor: transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                     padding: '6px',
+                    minWidth: '44px',
+                    minHeight: '44px',
+                    touchAction: 'manipulation',
                     borderRadius: '8px',
                     transition: 'background-color 0.15s',
                     backdropFilter: 'blur(4px)',
@@ -1297,6 +1359,9 @@ const AniaAvatarPlayer = forwardRef(({
                   style: {
                     backgroundColor: transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                     padding: '6px',
+                    minWidth: '44px',
+                    minHeight: '44px',
+                    touchAction: 'manipulation',
                     borderRadius: '8px',
                     transition: 'background-color 0.15s',
                     backdropFilter: 'blur(4px)',
@@ -1317,6 +1382,9 @@ const AniaAvatarPlayer = forwardRef(({
                   style: {
                     backgroundColor: transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                     padding: '6px',
+                    minWidth: '44px',
+                    minHeight: '44px',
+                    touchAction: 'manipulation',
                     borderRadius: '8px',
                     transition: 'background-color 0.15s',
                     backdropFilter: 'blur(4px)',
@@ -1369,7 +1437,8 @@ const AniaAvatarPlayer = forwardRef(({
                   // viewport is genuinely too short for the size asked for.
                   ...((!isMinimized && children)
                     ? {
-                        flex: "1 1 auto",
+                        flex: "0 1 auto",
+                        height: `min(${currentHeight}px, ${stageMaxVh}dvh)`,
                         maxHeight: `min(${currentHeight}px, ${stageMaxVh}dvh)`,
                         minHeight: `min(160px, ${Math.round(stageMaxVh * 0.6)}dvh, ${currentHeight}px)`
                       }

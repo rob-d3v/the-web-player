@@ -66,7 +66,14 @@ export interface AniaAvatarProps {
    * resolves from the `locale` table. */
   messagesOverride?: MessagesOverride;
   /** Playback speed multiplier RELATIVE to the .ania's own frame rate; the
-   * result is held inside `fpsClamp`. 1 = play the footage as shot. */
+   * result is held inside `fpsClamp`. 1 = play the footage as shot.
+   *
+   * Only values that land inside the `fpsClamp` window change anything (with
+   * the default window and 25 fps footage, roughly 0.96–1.2). A value asking
+   * for more than TWICE the window's ceiling is a legacy divisor from the
+   * pre-1.13 API (6.4 / 5.3 / 2.8), not a multiplier: since 1.15.0 it is
+   * ignored and the footage plays as shot, with a console warning naming the
+   * range that does have an effect. */
   idleSpeed?: number;
   /** @see idleSpeed */
   talkSpeed?: number;
@@ -438,6 +445,13 @@ export interface FlowInput {
   /** Whether a non-empty value is required. Default true. */
   required?: boolean;
   /**
+   * Echo the submitted value into the visible transcript (`onUserTurn`).
+   * Default true — the visitor typed it, and without it the conversation reads
+   * as the assistant asking twice in a row. `false` keeps the answer out of the
+   * log (it still goes into `collected`).
+   */
+  echo?: boolean;
+  /**
    * Validation rule: a built-in name (`'email'` | `'phone'` | `'cep'`) or a
    * regex source string. Omit for no format check (required-only).
    */
@@ -546,6 +560,15 @@ export interface UseFlowEngineDeps {
    * its visible chat log (keeps the spoken conversation visible in the transcript).
    */
   onPrompt?: (text: string) => void;
+  /**
+   * Fired with the visitor's OWN answer — the tapped bubble's label, or the
+   * value typed into an input node — so the host can echo it in the visible
+   * transcript. Without it the log holds assistant prompts only, and two
+   * consecutive questions read as the assistant answering itself twice.
+   *
+   * A node opts a typed value out with `input.echo: false`.
+   */
+  onUserTurn?: (text: string, info: { kind: 'option' | 'input'; nodeId: string | null; value?: any; key?: string }) => void;
   /** Opaque app/tenant id forwarded to the callbacks. */
   appId?: string | null;
   /** BCP-47 lang passed to speak(). */

@@ -128,9 +128,10 @@ Full chatbot with avatar, TTS, STT, file uploads, and webhook integration.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `idleSpeed` | `number` | `1` | Idle animation speed multiplier |
-| `talkSpeed` | `number` | `1` | Talk animation speed multiplier |
-| `autoCalculateSpeed` | `boolean` | `true` | Auto-detect optimal speeds from FPS |
+| `idleSpeed` | `number` | `1` | Idle speed multiplier, relative to the `.ania`'s own frame rate. Only values inside the `fpsClamp` window change anything (≈0.96–1.2 on 25 fps footage); a value asking for more than twice the window's ceiling is a pre-1.13 divisor and is ignored, with a console warning. |
+| `talkSpeed` | `number` | `1` | Talk speed multiplier. Same rules as `idleSpeed`. |
+| `fpsClamp` | `boolean \| {min,max}` | `{min:24,max:30}` | Frame-rate window playback is held to, lip-sync sweep included. `false` hands the raw multiplier to the runtime. |
+| `autoCalculateSpeed` | `boolean` | `true` | Deprecated and ignored since 1.13.0. Use `fpsClamp`. |
 | `showSpeedControls` | `boolean` | `false` | Show speed adjustment sliders |
 
 #### Chat Props
