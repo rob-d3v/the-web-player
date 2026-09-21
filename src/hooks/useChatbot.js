@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { getDeviceId } from '../utils/device-id.js';
+import { stripMarkdown as stripMarkdownText } from '../utils/strip-markdown.js';
 
 // Friendly, localized fallback copy shown to the user when the webhook fails.
 // `translate` is the AvatarChatbot's i18n resolver (tr.t); when absent (the hook
@@ -77,6 +78,13 @@ export const useChatbot = ({
   deviceId: deviceIdOverride,
   availableActions = [],
   onActionTriggered,
+  // Strip markdown (**bold**, # headings, lists, `code`, [links](...)) from the
+  // agent's reply before it becomes the bubble content — and therefore before
+  // AvatarChatbot speaks it, since TTS reads botMessage.content. The bubble is
+  // plain text, so raw markdown showed its asterisks and the voice read them.
+  // Text without markdown comes out identical; the output is never HTML. The
+  // untouched reply stays available as botMessage.raw. `false` opts out.
+  stripMarkdown = true,
   // Optional i18n resolver (AvatarChatbot passes tr.t). Used only to localize
   // the user-facing fallback message; the hook works without it.
   translate
@@ -137,7 +145,7 @@ export const useChatbot = ({
         const botMessage = {
           id: Date.now() + 1,
           role: "assistant",
-          content: responseText,
+          content: stripMarkdown ? stripMarkdownText(responseText) : responseText,
           timestamp: (new Date()).toISOString(),
           attachments: responseAttachments.length > 0 ? responseAttachments : undefined,
           raw: reply
@@ -279,7 +287,7 @@ export const useChatbot = ({
       const botMessage = {
         id: Date.now() + 1,
         role: "assistant",
-        content: responseText,
+        content: stripMarkdown ? stripMarkdownText(responseText) : responseText,
         timestamp: (new Date()).toISOString(),
         attachments: responseAttachments.length > 0 ? responseAttachments : undefined,
         raw: data
@@ -323,7 +331,7 @@ export const useChatbot = ({
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, extraPayload, onResponse, onError, availableActions, onActionTriggered, translate]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, extraPayload, onResponse, onError, availableActions, onActionTriggered, translate, stripMarkdown]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);

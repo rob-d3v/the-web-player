@@ -77,6 +77,7 @@ export {
 
 // Utilities
 export { getDeviceId, resetDeviceId, DEVICE_ID_KEY } from './utils/device-id.js';
+export { stripMarkdown } from './utils/strip-markdown.js';
 export { parseHotkey, matchesHotkey } from './utils/hotkey-parser.js';
 export { playActionAudio } from './utils/action-renderer.js';
 export { executeCommand, parseCommandLine, installPostMessageControl, COMMAND_LIST } from './utils/commands.js';

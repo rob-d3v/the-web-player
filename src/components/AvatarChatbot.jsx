@@ -169,6 +169,9 @@ const AvatarChatbotWidget = ({
   // a fake/mock provider, local testing, or a custom AI client. No webhookUrl
   // required. See useChatbot.
   onSendMessage,
+  // Clean markdown out of the agent's reply before it reaches the bubble and
+  // the voice (default ON). `false` shows/speaks the reply verbatim.
+  stripMarkdown = true,
   // Lip sync props
   // Default ON since 1.13.0. The sweep model works fully without any openness
   // map — branch C never consults one — so this costs nothing and no network.
@@ -675,6 +678,7 @@ const AvatarChatbotWidget = ({
     webhookHeaders,
     extraPayload,
     onSendMessage,
+    stripMarkdown,
     availableActions,
     // Localize the friendly fallback copy (chat.error.generic) shown on failure.
     translate: tr.t,

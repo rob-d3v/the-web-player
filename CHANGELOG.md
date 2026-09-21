@@ -2,6 +2,31 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.16.0] - 2026-09-21
+
+### Fixed — the bubble showed the agent's markdown, and the voice read it
+The model sometimes answers with `**bold**`, lists and headings. The bubble
+renders plain text, so the asterisks showed on screen, and the browser voice
+read them out loud.
+
+`useChatbot` now strips the markdown at the one point where an agent reply
+becomes the bubble content — both the webhook path and the `onSendMessage`
+responder path. `AvatarChatbot` speaks `botMessage.content`, so the voice gets
+the same clean text. The output is plain text, never HTML; a reply without
+markdown comes out byte-for-byte identical ("2 * 3", `snake_case`, URLs, emoji
+and accents pass untouched). Bullets become `•`, links become `label (url)`,
+code fences keep their code. The verbatim reply stays on `botMessage.raw`.
+
+This replaces a per-site workaround in the diatech site that re-implemented
+the webhook POST just to clean the reply. The fix belongs here, for every
+avatar.
+
+### Added
+- `stripMarkdown` prop on `AvatarChatbot` and option on `useChatbot`
+  (default `true`; `false` keeps the reply verbatim).
+- `stripMarkdown(text)` exported from the package: idempotent, safe to run on
+  the accumulated text of a stream, non-strings pass through.
+
 ## [1.15.0] - 2026-09-20
 
 ### Fixed — the flow answered itself twice

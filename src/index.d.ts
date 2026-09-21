@@ -241,6 +241,13 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
    * fake/mock provider or a custom AI client; no `webhookUrl` needed.
    */
   onSendMessage?: (message: string, metadata: any) => string | ChatResponsePayload | Promise<string | ChatResponsePayload>;
+  /**
+   * Strip markdown (`**bold**`, headings, lists, inline code, links) from the
+   * agent's reply before it becomes the bubble content and the spoken text.
+   * Text without markdown is unchanged; the output is plain text, never HTML.
+   * The verbatim reply stays on `ChatMessage.raw`. Default `true`.
+   */
+  stripMarkdown?: boolean;
   // ===== Plugin architecture =====
   /** Custom plugins registered on top of the built-ins (can override by id). */
   plugins?: Plugin[];
@@ -363,6 +370,13 @@ export interface UseChatbotOptions {
    * reply as a string or `{ message|content|text, attachments?, action? }`.
    */
   onSendMessage?: (message: string, metadata: any) => string | ChatResponsePayload | Promise<string | ChatResponsePayload>;
+  /**
+   * Strip markdown (`**bold**`, headings, lists, inline code, links) from the
+   * agent's reply before it becomes the bubble content and the spoken text.
+   * Text without markdown is unchanged; the output is plain text, never HTML.
+   * The verbatim reply stays on `ChatMessage.raw`. Default `true`.
+   */
+  stripMarkdown?: boolean;
   /** Constant fields merged into every POST body. Merged first — see AvatarChatbotProps.extraPayload. */
   extraPayload?: Record<string, any> | null;
   onResponse?: (message: ChatMessage, data: any) => void;
@@ -1153,4 +1167,7 @@ export function installPostMessageControl(
 
 export declare const DEVICE_ID_KEY: string;
 export declare function getDeviceId(options?: { enabled?: boolean; key?: string }): string;
+/** Remove markdown syntax from a string, keeping the text. Idempotent; plain
+ * text comes back identical; non-strings pass through. Never returns HTML. */
+export declare function stripMarkdown<T>(text: T): T;
 export declare function resetDeviceId(options?: { key?: string }): string;

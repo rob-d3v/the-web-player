@@ -14823,6 +14823,51 @@ const resetDeviceId = ({ key = DEVICE_ID_KEY } = {}) => {
   memoryFallback = null;
   return getDeviceId({ key });
 };
+const FENCE_LINE = /^[ \t]*(?:```|~~~)[^\n]*\n?/gm;
+const HEADING = /^[ \t]{0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/gm;
+const BLOCKQUOTE = /^[ \t]*>[ \t]?/gm;
+const RULE = /^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm;
+const BULLET = /^([ \t]*)[-*+][ \t]+/gm;
+const IMAGE = /!\[([^\]\n]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+const LINK = /\[([^\]\n]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+const INLINE_CODE = /(`+)([^\n]*?[^`\n])\1(?!`)/g;
+const BOLD_ITALIC = /\*\*\*(?=\S)([^\n]*?\S)\*\*\*/g;
+const BOLD = /\*\*(?=\S)([^\n]*?\S)\*\*/g;
+const BOLD_UNDERSCORE = /__(?=\S)([^\n]*?\S)__/g;
+const STRIKE = /~~(?=\S)([^\n]*?\S)~~/g;
+const ITALIC = /(^|[^\w*\\])\*(?=[^\s*])([^*\n]*?[^\s*\\])\*(?![\w*])/gm;
+const ITALIC_UNDERSCORE = /(^|[^\w\\])_(?=[^\s_])([^_\n]*?[^\s_\\])_(?!\w)/gm;
+const LEFTOVER_DOUBLE = new RegExp("\\*{2,}|(?<!\\w)_{2,}|_{2,}(?!\\w)", "g");
+const ORPHAN_OPEN = /(^|\s)\*(?=[^\s*])(?![^\n]*\*)/gm;
+const ORPHAN_BACKTICK = /`+(?=[^`\n]*$)(?![^\n]*`)/gm;
+const TRAILING_ASTERISK = /[ \t]+\*+$/;
+const ESCAPE = /\\([\\`*_{}[\]()#+\-.!>~|])/g;
+const MAY_HAVE_MARKUP = /[*_`#>[~\\]|^[ \t]*[-+]/m;
+function stripMarkdown(text) {
+  if (typeof text !== "string" || !MAY_HAVE_MARKUP.test(text)) return text;
+  let t = text;
+  t = t.replace(FENCE_LINE, "");
+  t = t.replace(HEADING, "$1");
+  t = t.replace(BLOCKQUOTE, "");
+  t = t.replace(RULE, "");
+  t = t.replace(BULLET, "$1• ");
+  t = t.replace(IMAGE, "$1");
+  t = t.replace(LINK, (_, label, url) => label.trim() === url ? url : `${label} (${url})`);
+  t = t.replace(INLINE_CODE, "$2");
+  t = t.replace(BOLD_ITALIC, "$1");
+  t = t.replace(BOLD, "$1");
+  t = t.replace(BOLD_UNDERSCORE, "$1");
+  t = t.replace(STRIKE, "$1");
+  t = t.replace(ITALIC, "$1$2");
+  t = t.replace(ITALIC_UNDERSCORE, "$1$2");
+  t = t.replace(LEFTOVER_DOUBLE, "");
+  t = t.replace(ORPHAN_OPEN, "$1");
+  t = t.replace(ORPHAN_BACKTICK, "");
+  t = t.replace(TRAILING_ASTERISK, "");
+  t = t.replace(ESCAPE, "$1");
+  t = t.replace(/\n{3,}/g, "\n\n");
+  return t === text ? text : t.trim();
+}
 const DEFAULT_GENERIC_ERROR = "Tive um probleminha aqui, pode tentar de novo?";
 function resolveGenericError(translate) {
   if (typeof translate === "function") {
@@ -14878,6 +14923,13 @@ const useChatbot = ({
   deviceId: deviceIdOverride,
   availableActions = [],
   onActionTriggered,
+  // Strip markdown (**bold**, # headings, lists, `code`, [links](...)) from the
+  // agent's reply before it becomes the bubble content — and therefore before
+  // AvatarChatbot speaks it, since TTS reads botMessage.content. The bubble is
+  // plain text, so raw markdown showed its asterisks and the voice read them.
+  // Text without markdown comes out identical; the output is never HTML. The
+  // untouched reply stays available as botMessage.raw. `false` opts out.
+  stripMarkdown: stripMarkdown$1 = true,
   // Optional i18n resolver (AvatarChatbot passes tr.t). Used only to localize
   // the user-facing fallback message; the hook works without it.
   translate
@@ -14921,7 +14973,7 @@ const useChatbot = ({
         const botMessage = {
           id: Date.now() + 1,
           role: "assistant",
-          content: responseText,
+          content: stripMarkdown$1 ? stripMarkdown(responseText) : responseText,
           timestamp: (/* @__PURE__ */ new Date()).toISOString(),
           attachments: responseAttachments.length > 0 ? responseAttachments : void 0,
           raw: reply
@@ -15034,7 +15086,7 @@ const useChatbot = ({
       const botMessage = {
         id: Date.now() + 1,
         role: "assistant",
-        content: responseText,
+        content: stripMarkdown$1 ? stripMarkdown(responseText) : responseText,
         timestamp: (/* @__PURE__ */ new Date()).toISOString(),
         attachments: responseAttachments.length > 0 ? responseAttachments : void 0,
         raw: data
@@ -15062,7 +15114,7 @@ const useChatbot = ({
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, extraPayload, onResponse, onError, availableActions, onActionTriggered, translate]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, extraPayload, onResponse, onError, availableActions, onActionTriggered, translate, stripMarkdown$1]);
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
@@ -17520,6 +17572,9 @@ const AvatarChatbotWidget = ({
   // a fake/mock provider, local testing, or a custom AI client. No webhookUrl
   // required. See useChatbot.
   onSendMessage,
+  // Clean markdown out of the agent's reply before it reaches the bubble and
+  // the voice (default ON). `false` shows/speaks the reply verbatim.
+  stripMarkdown: stripMarkdown2 = true,
   // Lip sync props
   // Default ON since 1.13.0. The sweep model works fully without any openness
   // map — branch C never consults one — so this costs nothing and no network.
@@ -17918,6 +17973,7 @@ const AvatarChatbotWidget = ({
     webhookHeaders,
     extraPayload,
     onSendMessage,
+    stripMarkdown: stripMarkdown2,
     availableActions,
     // Localize the friendly fallback copy (chat.error.generic) shown on failure.
     translate: tr2.t,
@@ -20255,6 +20311,7 @@ export {
   resetDeviceId,
   scoreLipSyncConfig,
   setCachedAvatar,
+  stripMarkdown,
   sttBrowserPlugin,
   sttGooglePlugin,
   ttsAzurePlugin,
