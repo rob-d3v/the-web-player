@@ -14,6 +14,13 @@
     "speed": {
       "idle": "Inativo:",
       "talk": "Fale:"
+    },
+    "button": {
+      "attach": "Anexar ficheiro",
+      "micStart": "Falar ao microfone",
+      "micStop": "Parar de ouvir",
+      "send": "Enviar mensagem",
+      "removeAttachment": "Remover anexo {{name}}"
     }
   },
   "avatar": {

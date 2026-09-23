@@ -2,6 +2,34 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.16.1] - 2026-09-23
+
+### Fixed — two WCAG AA failures in the open chat (axe-core 4.10)
+- **button-name**: the attach, mic and send buttons of the input bar were
+  icon-only with no accessible name, so a screen reader announced just
+  "button". Each now has an `aria-label` and a matching `title` from the i18n
+  table (`chat.button.attach`, `chat.button.micStart` / `micStop`,
+  `chat.button.send`), and so does the remove-attachment "x"
+  (`chat.button.removeAttachment`, with `{{name}}`). Keys ship in pt-BR, en,
+  pt-PT and es; the other locales fall back to English until translate.py
+  runs again. All four buttons also get `type="button"`, so a host that
+  mounts the widget inside a `<form>` no longer submits it by accident.
+- **color-contrast**: the "Ativar som" button had white text on `#f97316`,
+  2.8:1 (AA asks 4.5:1). It only shows until the avatar loads, which is why
+  axe caught it on a slow phone and not on desktop. It is now orange-700
+  `#c2410c`, 5.18:1. The "Falar com um atendente" flow bubble had the same
+  white-on-orange/red text (`#f97316 -> #ef4444`); axe does not score
+  gradients, so it was never reported, but it failed too. It is now
+  `#c2410c -> #b91c1c`, 5.18:1 or better at every point.
+- **color-contrast, the blue**: white text on the indigo -> blue gradient
+  (`#6366f1 -> #3b82f6`, 4.47:1 -> 3.68:1) failed AA in the flow option
+  bubbles, the flow submit, the user's message bubble and the send button.
+  axe only lists gradients as "needs review", so it never showed up as a
+  violation. Now indigo-600 -> blue-600 (`#4f46e5 -> #2563eb`, 6.29:1 ->
+  5.17:1), one step darker with the same look. Focus rings and the typing
+  dots keep `#6366f1` (no text on them). The dark/light/blue/purple chrome
+  themes are untouched.
+
 ## [1.16.0] - 2026-09-21
 
 ### Fixed — the bubble showed the agent's markdown, and the voice read it

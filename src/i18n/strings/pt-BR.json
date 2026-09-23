@@ -1,6 +1,11 @@
 {
   "chat.input.placeholder": "Digite sua mensagem...",
   "chat.input.listening": "Ouvindo...",
+  "chat.button.attach": "Anexar arquivo",
+  "chat.button.micStart": "Falar pelo microfone",
+  "chat.button.micStop": "Parar de ouvir",
+  "chat.button.send": "Enviar mensagem",
+  "chat.button.removeAttachment": "Remover anexo {{name}}",
   "chat.enableSound": "Ativar som",
   "chat.stt.transcribing": "Transcrevendo: ",
   "chat.stt.micActive": "Microfone ativo...",

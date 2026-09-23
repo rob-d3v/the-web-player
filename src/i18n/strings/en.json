@@ -1,6 +1,11 @@
 {
   "chat.input.placeholder": "Type your message...",
   "chat.input.listening": "Listening...",
+  "chat.button.attach": "Attach file",
+  "chat.button.micStart": "Speak into the microphone",
+  "chat.button.micStop": "Stop listening",
+  "chat.button.send": "Send message",
+  "chat.button.removeAttachment": "Remove attachment {{name}}",
   "chat.enableSound": "Enable Sound",
   "chat.stt.transcribing": "Transcribing: ",
   "chat.stt.micActive": "Microphone active...",

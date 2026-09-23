@@ -3225,6 +3225,11 @@ const waiting$2e = {
 const en = {
   "chat.input.placeholder": "Type your message...",
   "chat.input.listening": "Listening...",
+  "chat.button.attach": "Attach file",
+  "chat.button.micStart": "Speak into the microphone",
+  "chat.button.micStop": "Stop listening",
+  "chat.button.send": "Send message",
+  "chat.button.removeAttachment": "Remove attachment {{name}}",
   "chat.enableSound": "Enable Sound",
   "chat.stt.transcribing": "Transcribing: ",
   "chat.stt.micActive": "Microphone active...",
@@ -3335,6 +3340,13 @@ const chat$2b = {
   speed: {
     idle: "Inactivo:",
     talk: "Charla:"
+  },
+  button: {
+    attach: "Adjuntar archivo",
+    micStart: "Hablar por el micrófono",
+    micStop: "Dejar de escuchar",
+    send: "Enviar mensaje",
+    removeAttachment: "Quitar adjunto {{name}}"
   }
 };
 const avatar$2b = {
@@ -8827,6 +8839,11 @@ const waiting$O = {
 const ptBR = {
   "chat.input.placeholder": "Digite sua mensagem...",
   "chat.input.listening": "Ouvindo...",
+  "chat.button.attach": "Anexar arquivo",
+  "chat.button.micStart": "Falar pelo microfone",
+  "chat.button.micStop": "Parar de ouvir",
+  "chat.button.send": "Enviar mensagem",
+  "chat.button.removeAttachment": "Remover anexo {{name}}",
   "chat.enableSound": "Ativar som",
   "chat.stt.transcribing": "Transcrevendo: ",
   "chat.stt.micActive": "Microfone ativo...",
@@ -8876,6 +8893,13 @@ const chat$N = {
   speed: {
     idle: "Inativo:",
     talk: "Fale:"
+  },
+  button: {
+    attach: "Anexar ficheiro",
+    micStart: "Falar ao microfone",
+    micStop: "Parar de ouvir",
+    send: "Enviar mensagem",
+    removeAttachment: "Remover anexo {{name}}"
   }
 };
 const avatar$N = {
@@ -18535,8 +18559,8 @@ const AvatarChatbotWidget = ({
                 fontWeight: "600",
                 lineHeight: "1.2",
                 color: "#ffffff",
-                background: "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
-                boxShadow: "0 4px 14px rgba(59,130,246,0.35)",
+                background: "linear-gradient(135deg, #4f46e5 0%, #2563eb 100%)",
+                boxShadow: "0 4px 14px rgba(37,99,235,0.35)",
                 WebkitTapHighlightColor: "transparent"
               },
               children: flow_.currentInput.submitLabel ? flow_.resolveText(flow_.currentInput.submitLabel) : tr2.t("chat.flow.submit")
@@ -18596,8 +18620,8 @@ const AvatarChatbotWidget = ({
             whiteSpace: "normal",
             overflowWrap: "anywhere",
             textAlign: "left",
-            background: isEscalate ? "linear-gradient(135deg, #f97316 0%, #ef4444 100%)" : "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
-            boxShadow: isEscalate ? "0 4px 14px rgba(249,115,22,0.40)" : "0 4px 14px rgba(59,130,246,0.35)",
+            background: isEscalate ? "linear-gradient(135deg, #c2410c 0%, #b91c1c 100%)" : "linear-gradient(135deg, #4f46e5 0%, #2563eb 100%)",
+            boxShadow: isEscalate ? "0 4px 14px rgba(194,65,12,0.40)" : "0 4px 14px rgba(37,99,235,0.35)",
             animation: `ania-flow-pop .28s ease ${0.04 * idx}s both`,
             WebkitTapHighlightColor: "transparent"
           },
@@ -18821,7 +18845,7 @@ const AvatarChatbotWidget = ({
                           borderBottomRightRadius: isUser ? "5px" : "18px",
                           fontSize: "14px",
                           lineHeight: "1.5",
-                          background: isUser ? "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)" : "#ffffff",
+                          background: isUser ? "linear-gradient(135deg, #4f46e5 0%, #2563eb 100%)" : "#ffffff",
                           color: isUser ? "#ffffff" : "#1f2937",
                           boxShadow: "0 2px 8px rgba(15,23,42,0.12)",
                           overflowWrap: "anywhere",
@@ -18912,7 +18936,9 @@ const AvatarChatbotWidget = ({
                 padding: "14px 20px",
                 borderRadius: "16px",
                 border: "none",
-                backgroundColor: "#f97316",
+                // orange-700: white on the old #f97316 was 2.8:1 (fails WCAG AA
+                // 4.5:1); #c2410c keeps the hue and reaches 5.18:1.
+                backgroundColor: "#c2410c",
                 color: "#ffffff",
                 fontSize: "14px",
                 fontWeight: "600",
@@ -18921,7 +18947,7 @@ const AvatarChatbotWidget = ({
                 alignItems: "center",
                 justifyContent: "center",
                 gap: "8px",
-                boxShadow: "0 4px 12px rgba(249,115,22,0.4)"
+                boxShadow: "0 4px 12px rgba(194,65,12,0.4)"
               },
               children: [
                 jsx(Volume2, { size: 20 }),
@@ -18975,6 +19001,9 @@ const AvatarChatbotWidget = ({
                 att.preview ? jsx("img", { src: att.preview, alt: att.name, style: { width: "60px", height: "60px", objectFit: "cover", borderRadius: "12px" } }) : jsx("div", { style: { width: "60px", height: "60px", borderRadius: "12px", backgroundColor: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center" }, children: jsx(Paperclip, { size: 20, color: "#9ca3af" }) }),
                 jsx("button", {
                   onClick: () => removeAttachment(att.id),
+                  type: "button",
+                  "aria-label": tr2.t("chat.button.removeAttachment", { name: att.name }),
+                  title: tr2.t("chat.button.removeAttachment", { name: att.name }),
                   style: { position: "absolute", top: "-6px", right: "-6px", width: "20px", height: "20px", borderRadius: "50%", backgroundColor: "#ef4444", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
                   children: jsx(X, { size: 12, color: "#ffffff" })
                 })
@@ -19003,6 +19032,9 @@ const AvatarChatbotWidget = ({
                 },
                 disabled: isLoading,
                 className: "ania-chat-iconbtn",
+                type: "button",
+                "aria-label": tr2.t("chat.button.attach"),
+                title: tr2.t("chat.button.attach"),
                 style: {
                   width: "44px",
                   height: "44px",
@@ -19052,6 +19084,9 @@ const AvatarChatbotWidget = ({
                 onClick: handleMicToggle,
                 disabled: isLoading,
                 className: "ania-chat-iconbtn",
+                type: "button",
+                "aria-label": isListening ? tr2.t("chat.button.micStop") : tr2.t("chat.button.micStart"),
+                title: isListening ? tr2.t("chat.button.micStop") : tr2.t("chat.button.micStart"),
                 style: {
                   width: "44px",
                   height: "44px",
@@ -19074,6 +19109,9 @@ const AvatarChatbotWidget = ({
                 onClick: handleSend,
                 disabled: !inputMessage.trim() && attachments.length === 0 || isLoading,
                 className: "ania-chat-iconbtn",
+                type: "button",
+                "aria-label": tr2.t("chat.button.send"),
+                title: tr2.t("chat.button.send"),
                 style: {
                   width: "44px",
                   height: "44px",
@@ -19082,12 +19120,12 @@ const AvatarChatbotWidget = ({
                   flexShrink: 0,
                   borderRadius: "50%",
                   border: "none",
-                  background: !inputMessage.trim() && attachments.length === 0 || isLoading ? "#d1d5db" : "linear-gradient(135deg, #6366f1 0%, #3b82f6 100%)",
+                  background: !inputMessage.trim() && attachments.length === 0 || isLoading ? "#d1d5db" : "linear-gradient(135deg, #4f46e5 0%, #2563eb 100%)",
                   cursor: !inputMessage.trim() && attachments.length === 0 || isLoading ? "not-allowed" : "pointer",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: "0 2px 8px rgba(59,130,246,0.35)"
+                  boxShadow: "0 2px 8px rgba(37,99,235,0.35)"
                 },
                 children: jsx(Send, { size: 18, color: "#ffffff" })
               }),
