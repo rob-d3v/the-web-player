@@ -2,6 +2,82 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.17.0] - 2026-10-07
+
+### Changed — the avatar stops paying for frames nobody sees (runtime ext 2.1.0-governor)
+- Measured on ObraVision: the floating avatar ran requestAnimationFrame at
+  24-30 fps on every page, forever — minimized, in a background tab, scrolled
+  away — drawing into a canvas at the footage's native size (~480x480) that CSS
+  then shrank, with 200 decoded webp frames held in memory. Visible, active
+  behaviour (speech, lip sync, actions, chat, minimize/restore) is unchanged.
+- **Runtime** (`player-runtime/src/ext/index.js`, EXT_VERSION `2.1.0-governor`):
+  `window.AniaPlayer.AniaPlayer` is now a `GovernedPlayer` subclass. Idle redraws
+  drop to ~12-15 fps (2 frames per tick at 24-30 fps) while the idle motion
+  keeps its authored speed — the loop catches the controller up instead of
+  slowing it. Talking and actions still draw every frame on rAF, and a talk
+  start during an idle wait is drawn on the next rAF (`wake()`). Decoded-frame
+  cache 200 -> 40 (`GovernedPlayer.FRAME_CACHE_SIZE`). New `player.onActivity`
+  hook fires on every talk change / action start. The base bundle's
+  `console.log` on every talk edge is gone (`window.__ANIA_DEBUG__` brings it
+  back). `verify:runtime` passes 25/25: idle/talk sequences unchanged.
+- **Lib** (`AniaAvatar.jsx`): the loop is paused (last frame held) while the
+  tab is hidden, while the widget is off-screen (IntersectionObserver), and
+  1.2 s after it is minimized unless it is talking or playing an action; it
+  resumes immediately on any of those, including when speech starts. The
+  30 s keepalive re-applies that decision instead of forcing `play()`.
+- Canvas backing store = displayed CSS size x devicePixelRatio (capped at 2),
+  never above native, high-quality smoothing; follows minimize, chat open,
+  resize and zoom (ResizeObserver).
+- The .ania fetch waits for an idle main thread (requestIdleCallback, 1.5 s cap)
+  so it does not compete with the host page's first render.
+- The 10 `[AniaAvatar]` debug `console.log`s now print only with
+  `window.__ANIA_DEBUG__ = true` or `localStorage["ania:debug"] = "1"`.
+- Works on a stale cached runtime too: without `GovernedPlayer` the lib caps the
+  cache itself and still pauses/resumes; only the idle fps cap needs ext 2.1.0.
+- New test `examples/test-render-governor.mjs` (in `npm test`): 3 s idle = 40
+  redraws vs 81 on the base loop, reaching the same frame (80 vs 81); talking
+  draws the identical frame sequence.
+
+## [1.16.2] - 2026-09-23
+
+### Fixed — "Carregando avatar..." failed contrast mid-pulse
+- The loading label pulsed its own opacity (`ania-pulse`, 1 -> 0.5). Ink at
+  half opacity on a light page measured ~3.4:1 in production (axe on
+  diatech.solutions), and the site had to patch it with its own CSS. The text
+  is now always fully opaque on its own pill (`LOADING_PILL` in
+  `constants/themes.js`: slate/white, or near-white/ink on `theme="light"`),
+  solid, so its colours pass AA over any backdrop — the stage can be transparent over
+  a host page the lib cannot see, and the blue/purple theme backgrounds give
+  white text only ~3.7–4:1. White on slate-900 is 17.9:1, ink on slate-50 17.1:1.
+- Only a decorative, `aria-hidden` dot pulses now, and it stops under
+  `prefers-reduced-motion`. The block is a `role="status"` live region, so
+  screen readers announce the loading state.
+- New test `examples/test-loading-contrast.mjs` (in `npm test`).
+- Sites that patched it (my-page `perfil.css`, `[data-ania-canvas] > div {
+  animation: none }`) keep working; the rule becomes a no-op and can go.
+
+### Fixed — minimize icon invisible on `theme="light"`
+- The minimize and maximize icons were hard-coded white. With `theme="light"`
+  and the opaque card (`transparent={false}`) they sat on a near-white button
+  (`controlBg` over slate-50): 1.02:1, below the 3:1 WCAG 1.4.11 asks of a
+  non-text component. All three header icons now share one rule
+  (`controlIconColor`): the theme's own text colour on the opaque card, white
+  only on the transparent stage (whose button draws its own dark background).
+  Light: ink on the button 16.5–17.7:1 over any page. Dark, blue and purple are
+  unchanged (their text colour is white); the close X already worked this way.
+- New test `examples/test-control-icon-contrast.mjs` (in `npm test`).
+
+### Fixed — header icons below 3:1 on `theme="blue"` / `theme="purple"`
+- Same buttons, other themes: the white icons sat on a white wash
+  (`controlBg` 0.2 / `controlHover` 0.3) over the theme gradient, 2.3–2.8:1
+  (worse on hover). Only the button backgrounds changed, to a darker shade of
+  the theme's own hue at 90%: blue-700 idle / blue-800 hover, purple-700 /
+  purple-800. White icon now >= 6.2:1 idle and >= 7.9:1 hover over any page;
+  the close button's red hover is >= 3.9:1. Theme colours, text and every
+  other element are untouched.
+- `examples/test-control-icon-contrast.mjs` now covers all four themes, idle
+  and hover, on every gradient stop, with a 3.5:1 target for blue/purple.
+
 ## [1.16.1] - 2026-09-23
 
 ### Fixed — two WCAG AA failures in the open chat (axe-core 4.10)

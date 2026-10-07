@@ -2,7 +2,7 @@ import { jsx, jsxs } from 'react/jsx-runtime';
 import { useRef, useState, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { Maximize2, Minimize2, X } from 'lucide-react';
-import { THEMES } from '../constants/themes.js';
+import { THEMES, LOADING_PILL } from '../constants/themes.js';
 
 // How long to wait for the host page's `<script src=".../aniaplayer.min.js">` to
 // define `window.AniaPlayer` before declaring it absent. Generous: a cold cache
@@ -32,6 +32,101 @@ const warnDeprecated = (key, message) => {
   if (warnedOnce.has(key)) return;
   warnedOnce.add(key);
   console.warn(`[AniaAvatar] ${message}`);
+};
+
+// ---------------------------------------------------------------------------
+// Render cost governor (host side). The avatar is a floating widget present on every page,
+// so its idle cost matters more than its peak cost. Nothing here changes how
+// it looks while visible and active; it only stops paying for pixels nobody
+// sees and for redraws the eye cannot tell apart.
+// ---------------------------------------------------------------------------
+// Decoded frames kept by the runtime's LRU (base default 200 decoded bitmaps,
+// ~180 MB at 480x480 RGBA). Only applied here for a pre-2.1.0 runtime; the
+// governed runtime sets the same cap itself. Idle fps cap: see the runtime's
+// GovernedPlayer (player-runtime/src/ext/index.js).
+const FRAME_CACHE_SIZE = 40;
+// Grace before freezing a minimized/off-screen avatar, so the mouth settles
+// back into idle after speech instead of freezing mid-syllable.
+const PAUSE_GRACE_MS = 1200;
+const MAX_CANVAS_DPR = 2;
+// Upper bound for waiting on an idle main thread before fetching the .ania.
+const ANIA_IDLE_TIMEOUT_MS = 1500;
+// Verbose logs: window.__ANIA_DEBUG__ = true, or localStorage 'ania:debug' = '1'.
+const isAniaDebug = () => {
+  if (typeof window === "undefined") return false;
+  if (window.__ANIA_DEBUG__) return true;
+  try {
+    return window.localStorage.getItem("ania:debug") === "1";
+  } catch (e) {
+    return false;
+  }
+};
+const debugLog = (...args) => {
+  if (isAniaDebug()) console.log(...args);
+};
+const waitForIdle = (timeoutMs) => new Promise((resolve) => {
+  if (typeof window === "undefined") return resolve();
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(() => resolve(), { timeout: timeoutMs });
+  } else {
+    setTimeout(resolve, Math.min(timeoutMs, 300));
+  }
+});
+const isControllerActive = (ctrl) => !!ctrl && (!!ctrl.isTalking || typeof ctrl.isActionPlaying === "function" && ctrl.isActionPlaying());
+// Size the canvas backing store to what is actually displayed (CSS box x DPR,
+// DPR capped at 2), never above the footage's native size. max() of the two
+// ratios covers both object-fit contain and cover. Redraws the held frame,
+// since assigning width/height clears the canvas.
+const sizeCanvasToDisplay = (player, natW, natH) => {
+  const canvas = player && player.canvas;
+  if (!canvas || !(natW > 0) || !(natH > 0)) return;
+  const cssW = canvas.clientWidth;
+  const cssH = canvas.clientHeight;
+  if (!cssW || !cssH) return;
+  const dpr = Math.min(MAX_CANVAS_DPR, Math.max(1, window.devicePixelRatio || 1));
+  const scale = Math.min(1, Math.max(cssW / natW, cssH / natH) * dpr);
+  const w = Math.max(1, Math.round(natW * scale));
+  const h = Math.max(1, Math.round(natH * scale));
+  if (canvas.width === w && canvas.height === h) return;
+  canvas.width = w;
+  canvas.height = h;
+  if (player.ctx) {
+    player.ctx.imageSmoothingEnabled = true;
+    player.ctx.imageSmoothingQuality = "high";
+  }
+  if (player.fileData && typeof player.renderFrame === "function") {
+    player.renderFrame(player.currentFrame || 0);
+  }
+};
+// Hooks the runtime so a paused player resumes the moment speech or an action
+// starts. Runtime ext >= 2.1.0 (GovernedPlayer) owns the idle fps cap and the
+// 40-frame cache and exposes player.onActivity; an older cached runtime gets
+// the cache cap and the resume hook here, and simply keeps its full-rate idle.
+const attachRenderHooks = (player, onActivity) => {
+  if (player.constructor && player.constructor.governed) {
+    player.onActivity = onActivity;
+    return;
+  }
+  if (player.frameCache && typeof player.frameCache.setMaxSize === "function") {
+    player.frameCache.setMaxSize(FRAME_CACHE_SIZE);
+  }
+  const ctrl = player.animationController;
+  if (ctrl && typeof ctrl.setTalkingState === "function") {
+    const baseSetTalking = ctrl.setTalkingState;
+    ctrl.setTalkingState = function(talking) {
+      const r = baseSetTalking.call(this, talking);
+      onActivity();
+      return r;
+    };
+  }
+  if (ctrl && typeof ctrl.triggerAction === "function") {
+    const baseTrigger = ctrl.triggerAction;
+    ctrl.triggerAction = function(actionId) {
+      const r = baseTrigger.call(this, actionId);
+      onActivity();
+      return r;
+    };
+  }
 };
 
 // forwardRef: useAniaAvatarRef expects `ref.current.playerRef` — without the
@@ -200,6 +295,48 @@ const AniaAvatarPlayer = forwardRef(({
   const positionStartRef = useRef({ x: 0, y: 0 });
   const outerContainerRef = useRef(null);
   const hasDraggedRef = useRef(false);
+  // Render governor state (see attachRenderHooks). Refs, not state: the
+  // run/pause decision must never re-render the widget.
+  const isMinimizedRef = useRef(startMinimized);
+  const offscreenRef = useRef(false);
+  const pauseTimerRef = useRef(null);
+  const nativeSizeRef = useRef(null);
+  // Runs the loop only while the avatar can be seen: tab visible, on screen,
+  // and maximized — or minimized but talking/acting. Resuming is immediate;
+  // pausing waits PAUSE_GRACE_MS (except for a hidden tab) and holds the
+  // last drawn frame on the canvas.
+  const syncRenderLoop = useCallback(() => {
+    const player = playerRef.current;
+    if (!player || !player.animationController || typeof player.play !== "function") return;
+    const shouldRun = () => {
+      const p = playerRef.current;
+      if (!p) return false;
+      if (typeof document !== "undefined" && document.hidden) return false;
+      if (offscreenRef.current) return false;
+      return !isMinimizedRef.current || isControllerActive(p.animationController);
+    };
+    if (shouldRun()) {
+      if (pauseTimerRef.current) {
+        clearTimeout(pauseTimerRef.current);
+        pauseTimerRef.current = null;
+      }
+      try {
+        if (!player.isPlaying) player.play();
+        else if (typeof player.wake === "function") player.wake();
+      } catch (err) {
+        console.error("[AniaAvatar] Error reactivating:", err);
+      }
+      return;
+    }
+    if (!player.isPlaying || pauseTimerRef.current) return;
+    const doPause = () => {
+      pauseTimerRef.current = null;
+      if (playerRef.current !== player || !player.isPlaying || shouldRun()) return;
+      player.pause();
+    };
+    if (typeof document !== "undefined" && document.hidden) doPause();
+    else pauseTimerRef.current = setTimeout(doPause, PAUSE_GRACE_MS);
+  }, []);
 
   useEffect(() => {
     setIsMinimized(startMinimized);
@@ -214,13 +351,17 @@ const AniaAvatarPlayer = forwardRef(({
     return () => window.removeEventListener('resize', checkMobile);
   }, [mobileBreakpoint]);
 
-  // Inject pulse keyframe for loading animation (must exist before avatar loads)
+  // Inject pulse keyframe for loading animation (must exist before avatar loads).
+  // The id carries a version: a page that already has an older copy of the lib injected
+  // `ania-pulse-keyframes` would otherwise never get the reduced-motion rule below.
   useEffect(() => {
-    const id = 'ania-pulse-keyframes';
+    const id = 'ania-pulse-keyframes-2';
     if (!document.getElementById(id)) {
       const style = document.createElement('style');
       style.id = id;
-      style.textContent = '@keyframes ania-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }';
+      style.textContent =
+        '@keyframes ania-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }' +
+        '@media (prefers-reduced-motion: reduce) { .ania-loading-dot { animation: none !important; } }';
       document.head.appendChild(style);
     }
   }, []);
@@ -395,57 +536,78 @@ const AniaAvatarPlayer = forwardRef(({
 
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (!document.hidden && playerRef.current) {
-        if (playerRef.current.play && typeof playerRef.current.play === 'function') {
-          try {
-            playerRef.current.play();
-          } catch (err) {
-            console.error("[AniaAvatar] Error reactivating:", err);
-          }
-        }
-
-        // Re-assert the talk state ONLY when this component's own audio
-        // detection owns it (detectAudio mode). In chatbot/host-driven mode
-        // the local `isTalking` is always false — forcing it here froze the
-        // mouth whenever the user returned to the tab mid-speech.
-        if (detectAudio && playerRef.current.animationController) {
-          playerRef.current.animationController.setTalkingState(isTalking);
-        }
+      syncRenderLoop();
+      // Re-assert the talk state ONLY when this component's own audio
+      // detection owns it (detectAudio mode). In chatbot/host-driven mode
+      // the local `isTalking` is always false — forcing it here froze the
+      // mouth whenever the user returned to the tab mid-speech.
+      if (!document.hidden && detectAudio && playerRef.current && playerRef.current.animationController) {
+        playerRef.current.animationController.setTalkingState(isTalking);
       }
     };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    // Keepalive: re-applies the run/pause decision (restarts a loop the
+    // browser dropped) instead of forcing play() on a deliberately paused one.
     const keepaliveInterval = setInterval(() => {
-      if (!document.hidden && playerRef.current && isLoaded) {
-        if (playerRef.current.play && typeof playerRef.current.play === 'function') {
-          try {
-            const canvas = playerRef.current.canvas;
-            if (canvas && canvas.getContext) {
-              const ctx = canvas.getContext('2d');
-              if (ctx && playerRef.current.animationController) {
-                playerRef.current.play();
-              }
-            }
-          } catch (err) {
-            console.warn("[AniaAvatar] Keepalive failed:", err);
-          }
-        }
-      }
+      if (isLoaded) syncRenderLoop();
     }, 30000);
-
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       clearInterval(keepaliveInterval);
     };
-  }, [isTalking, isLoaded, detectAudio]);
+  }, [isTalking, isLoaded, detectAudio, syncRenderLoop]);
+  useEffect(() => {
+    isMinimizedRef.current = isMinimized;
+    syncRenderLoop();
+  }, [isMinimized, isLoaded, syncRenderLoop]);
+  // Pause while the widget is scrolled/clipped out of view.
+  useEffect(() => {
+    if (!isLoaded || !containerRef.current || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      offscreenRef.current = !!entry && !entry.isIntersecting;
+      syncRenderLoop();
+    });
+    io.observe(containerRef.current);
+    return () => {
+      io.disconnect();
+      offscreenRef.current = false;
+    };
+  }, [isLoaded, syncRenderLoop]);
+  // Keep the canvas backing store matched to its displayed size (minimize,
+  // chat open, window resize, zoom/DPR change).
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!isLoaded || !player || !player.canvas) return;
+    const resize = () => {
+      const size = nativeSizeRef.current;
+      if (size && playerRef.current) sizeCanvasToDisplay(playerRef.current, size.w, size.h);
+    };
+    resize();
+    let ro = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(resize);
+      ro.observe(player.canvas);
+    }
+    window.addEventListener("resize", resize);
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener("resize", resize);
+    };
+  }, [isLoaded]);
+  useEffect(() => () => {
+    if (pauseTimerRef.current) {
+      clearTimeout(pauseTimerRef.current);
+      pauseTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     const loadAvatar = async () => {
       var _a, _b, _c;
-      console.log('[AniaAvatar] loadAvatar called', { isLoading: isLoadingRef.current, hasAniaPlayer: !!window.AniaPlayer, hasContainer: !!containerRef.current, hasPlayer: !!playerRef.current });
+      debugLog('[AniaAvatar] loadAvatar called', { isLoading: isLoadingRef.current, hasAniaPlayer: !!window.AniaPlayer, hasContainer: !!containerRef.current, hasPlayer: !!playerRef.current });
       if (isLoadingRef.current) {
-        console.log('[AniaAvatar] Already loading, skipping');
+        debugLog('[AniaAvatar] Already loading, skipping');
         return;
       }
       if (!window.AniaPlayer) {
@@ -459,13 +621,16 @@ const AniaAvatarPlayer = forwardRef(({
         return;
       }
       if (playerRef.current) {
-        console.log('[AniaAvatar] Player already exists, skipping');
+        debugLog('[AniaAvatar] Player already exists, skipping');
         return;
       }
       isLoadingRef.current = true;
       const startTime = performance.now();
       try {
         let avatarData;
+        // Let the host page finish its first render before pulling and
+        // decoding a multi-MB .ania (bounded wait; see ANIA_IDLE_TIMEOUT_MS).
+        await waitForIdle(ANIA_IDLE_TIMEOUT_MS);
         if (avatarUrl) {
           const fetchStart = performance.now();
 
@@ -619,7 +784,7 @@ const AniaAvatarPlayer = forwardRef(({
           speed: talkReq.speed,
           clamp: clampCfg
         });
-        console.log(
+        debugLog(
           `[AniaAvatar] fps ${nativeFps.toFixed(2)} (${fpsSource}) → idle ` +
             `${(1000 / idleIntervalMs).toFixed(1)}fps / talk ${(1000 / talkIntervalMs).toFixed(1)}fps` +
             (clampCfg ? ` [clamped ${clampCfg.min}-${clampCfg.max}]` : ' [unclamped]')
@@ -694,7 +859,7 @@ const AniaAvatarPlayer = forwardRef(({
           isLoadingRef.current = false;
           return;
         }
-        console.log('[AniaAvatar] Creating player with container:', containerRef.current, 'size:', canvasWidth, 'x', canvasHeight);
+        debugLog('[AniaAvatar] Creating player with container:', containerRef.current, 'size:', canvasWidth, 'x', canvasHeight);
         const player = new PlayerClass(containerRef.current, {
           transparent: true,
           chroma_enabled: false,
@@ -864,7 +1029,7 @@ const AniaAvatarPlayer = forwardRef(({
                 if (playerRef.current !== player) return;
                 applyLipSync(best ? best.config : null);
                 if (best) {
-                  console.log(
+                  debugLog(
                     `[AniaAvatar] Lip sync config from server: "${best.configName || best.configId || 'default'}"` +
                     ` (score ${best.score == null ? 'n/a' : best.score.toFixed(1)} de ${best.candidates} candidata(s))`
                   );
@@ -917,11 +1082,16 @@ const AniaAvatarPlayer = forwardRef(({
           ctrl.getSpectralFluxFn = lipSyncHook.getSpectralFlux;
         }
 
+        nativeSizeRef.current = { w: canvasWidth, h: canvasHeight };
+        attachRenderHooks(player, () => {
+          if (playerRef.current === player) syncRenderLoop();
+        });
+        sizeCanvasToDisplay(player, canvasWidth, canvasHeight);
         player.play();
         playerRef.current = player;
         setIsLoaded(true);
         isLoadingRef.current = false;
-        console.log('[AniaAvatar] Avatar loaded successfully!');
+        debugLog('[AniaAvatar] Avatar loaded successfully!');
 
         if (onLoad) {
           onLoad(player);
@@ -949,11 +1119,11 @@ const AniaAvatarPlayer = forwardRef(({
         isLoadingRef.current = false;
       }
     };
-    console.log('[AniaAvatar] useEffect running, window.AniaPlayer:', !!window.AniaPlayer);
+    debugLog('[AniaAvatar] useEffect running, window.AniaPlayer:', !!window.AniaPlayer);
     if (window.AniaPlayer) {
       loadAvatar();
     } else {
-      console.log('[AniaAvatar] Waiting for AniaPlayer script...');
+      debugLog('[AniaAvatar] Waiting for AniaPlayer script...');
       // This wait used to be unbounded, and it never set `error`. When a host
       // page ships no `/player/aniaplayer.min.js` — which two apps in the fleet
       // genuinely do not — the widget polled every 100 ms forever and rendered
@@ -973,7 +1143,7 @@ const AniaAvatarPlayer = forwardRef(({
       const waitStartedAt = Date.now();
       const checkInterval = setInterval(() => {
         if (window.AniaPlayer) {
-          console.log('[AniaAvatar] AniaPlayer found after wait!');
+          debugLog('[AniaAvatar] AniaPlayer found after wait!');
           clearInterval(checkInterval);
           loadAvatar();
           return;
@@ -1216,6 +1386,12 @@ const AniaAvatarPlayer = forwardRef(({
   })();
   const currentTheme = THEMES[theme] || THEMES.dark;
   const isMobileMinimized = isMobile && isMinimized;
+  // Ink of the minimize / maximize / close icons. They used to be hard-coded white, which on
+  // `theme="light"` with the opaque card sat on a near-white button: 1.02:1 (axe, 2026-09-23).
+  // The theme's own text colour passes the 3:1 of a non-text component on its own controlBg /
+  // controlHover (light 17.5:1, dark unchanged white). A transparent stage keeps white, on the
+  // dark translucent button it draws for itself.
+  const controlIconColor = transparent ? "#fff" : currentTheme.textPrimary;
 
   const getContainerStyle = () => {
     // On a phone, an OPEN widget behaves like a bottom sheet: edge-to-edge
@@ -1349,7 +1525,7 @@ const AniaAvatarPlayer = forwardRef(({
                   onMouseEnter: (e) => e.currentTarget.style.backgroundColor = transparent ? "rgba(0,0,0,0.7)" : currentTheme.controlHover,
                   onMouseLeave: (e) => e.currentTarget.style.backgroundColor = transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                   title: tr.t("avatar.title.maximize"),
-                  children: jsx(Maximize2, { size: 14, style: { color: "#fff" } })
+                  children: jsx(Maximize2, { size: 14, style: { color: controlIconColor } })
                 }
               ),
               minimizable && !isMinimized && jsx(
@@ -1372,7 +1548,7 @@ const AniaAvatarPlayer = forwardRef(({
                   onMouseEnter: (e) => e.currentTarget.style.backgroundColor = transparent ? "rgba(0,0,0,0.7)" : currentTheme.controlHover,
                   onMouseLeave: (e) => e.currentTarget.style.backgroundColor = transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                   title: tr.t("avatar.title.minimize"),
-                  children: jsx(Minimize2, { size: 14, style: { color: "#fff" } })
+                  children: jsx(Minimize2, { size: 14, style: { color: controlIconColor } })
                 }
               ),
               closable && !isMinimized && jsx(
@@ -1395,7 +1571,7 @@ const AniaAvatarPlayer = forwardRef(({
                   onMouseEnter: (e) => e.currentTarget.style.backgroundColor = "rgba(239, 68, 68, 0.7)",
                   onMouseLeave: (e) => e.currentTarget.style.backgroundColor = transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg,
                   title: tr.t("avatar.title.close"),
-                  children: jsx(X, { size: 14, style: { color: transparent ? "#fff" : currentTheme.textPrimary } })
+                  children: jsx(X, { size: 14, style: { color: controlIconColor } })
                 }
               )
             ] }),
@@ -1456,17 +1632,44 @@ const AniaAvatarPlayer = forwardRef(({
                 onClick: handleContainerClick,
                 title: minimizable ? (isMinimized ? tr.t("avatar.title.clickToMaximize") : tr.t("avatar.title.clickToMinimize")) : undefined,
                 children: [
-                  !isLoaded && !error && jsx(
+                  // The label used to pulse its OWN opacity (1 → 0.5): ink at half opacity on a
+                  // light page measured ~3.4:1 in production (axe, diatech.solutions, 2026-09-23),
+                  // and the host page behind a transparent stage is unknown to the lib anyway. So
+                  // the text is always fully opaque on its own pill, whose colours pass AA over
+                  // ANY backdrop (worst case ≥ 14:1), and only a decorative dot pulses.
+                  !isLoaded && !error && jsxs(
                     "div",
                     {
+                      role: "status",
+                      "aria-live": "polite",
                       style: {
-                        color: currentTheme.textPrimary,
+                        color: LOADING_PILL[theme === 'light' ? 'light' : 'dark'].fg,
+                        background: LOADING_PILL[theme === 'light' ? 'light' : 'dark'].bg,
                         position: "relative",
                         zIndex: 1,
                         fontSize: '0.875rem',
-                        animation: 'ania-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+                        lineHeight: 1.3,
+                        padding: '4px 12px',
+                        borderRadius: '9999px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '8px'
                       },
-                      children: tr.t("avatar.loading")
+                      children: [
+                        jsx("span", {
+                          className: "ania-loading-dot",
+                          "aria-hidden": "true",
+                          style: {
+                            width: '6px',
+                            height: '6px',
+                            borderRadius: '50%',
+                            background: 'currentColor',
+                            flexShrink: 0,
+                            animation: 'ania-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+                          }
+                        }, "dot"),
+                        jsx("span", { children: tr.t("avatar.loading") }, "label")
+                      ]
                     }
                   ),
                   error && jsx("div", { style: { color: '#f87171', fontSize: '0.75rem', padding: '8px', textAlign: 'center', position: "relative", zIndex: 1 }, children: error })
