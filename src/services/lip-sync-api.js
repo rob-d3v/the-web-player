@@ -81,6 +81,47 @@ export const parseLipSyncConfig = (raw) => {
   return data;
 };
 
+/** Padrões do .ania, validados como no desktop (avatar_defaults.embedded_lipsync). */
+export const readEmbeddedLipSync = (avatarData, talkLow, talkHigh) => {
+  const data = avatarData.lipsync;
+  const frameCount = avatarData.video?.frames?.length || 0;
+  if (!data || typeof data !== 'object' || !Number.isInteger(talkLow) || !Number.isInteger(talkHigh) || talkLow < 0 || talkHigh >= frameCount || talkHigh <= talkLow) return null;
+  if (!Array.isArray(data.talkRange) || data.talkRange[0] !== talkLow || data.talkRange[1] !== talkHigh || data.talkRange.length !== 2) return null;
+  if (!Array.isArray(data.opennessMap)) return null;
+  const values = data.opennessMap.length === frameCount
+    ? data.opennessMap.slice(talkLow, talkHigh + 1)
+    : data.opennessMap;
+  if (values.length !== talkHigh - talkLow + 1) return null;
+  const opennessMap = values.map((v) =>
+    typeof v === 'number' || (typeof v === 'string' && v.trim()) ? Number(v) : NaN
+  );
+  if (!opennessMap.every((v) => Number.isFinite(v) && v >= 0 && v <= 1)) return null;
+  const tuning = data.tuning && typeof data.tuning === 'object' ? data.tuning : {};
+  const number = (key, fallback, low, high) => {
+    const value = tuning[key] == null ? NaN : Number(tuning[key]);
+    return Number.isFinite(value) ? Math.min(high, Math.max(low, value)) : fallback;
+  };
+  return {
+    enabled: data.enabled !== false,
+    opennessMap,
+    intensity: number('intensity', 0.6, 0, 1),
+    responsiveness: number('responsiveness', 0.5, 0.05, 1),
+    sustainStyle: tuning.sustainStyle === 'hold' ? 'hold' : 'wiggle',
+    wiggleSpeed: Math.floor(number('wiggleSpeed', 2, 1, 6))
+  };
+};
+
+/** Host explícito > arquivo validado > servidor > padrões; zero é um valor válido. */
+export const resolveLipSyncSettings = (embedded, props = {}, server = null, talkLow = 0, talkHigh = 0) => ({
+  enabled: props.enabled ?? embedded?.enabled ?? true,
+  opennessMap: props.opennessMap ?? embedded?.opennessMap ??
+    (server?.lips_sync_keyframes ? buildOpennessMap(server.lips_sync_keyframes, talkLow, talkHigh) : null),
+  intensity: props.intensity ?? embedded?.intensity ?? server?.lips_sync_sync_intensity ?? 0.6,
+  responsiveness: props.responsiveness ?? embedded?.responsiveness ?? server?.lips_sync_responsiveness ?? 0.5,
+  sustainStyle: props.sustainStyle ?? embedded?.sustainStyle ?? server?.lips_sync_sustain_style ?? 'wiggle',
+  wiggleSpeed: props.wiggleSpeed ?? embedded?.wiggleSpeed ?? server?.lips_sync_wiggle_speed ?? 5
+});
+
 /**
  * Hash do conteúdo do avatar: SHA-256 sobre a concatenação UTF-8 das strings de
  * frame, na ordem do arquivo. É a MESMA conta do desktop

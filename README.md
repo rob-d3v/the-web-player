@@ -278,10 +278,53 @@ The picker is exported too, for a host that wants to run it itself:
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `actions` | `ActionConfig[]` | - | Action configurations |
+| `actions` | `ActionConfig[]` | - | Host action configurations (fallback when the .ania has none); otherwise restricts the configured file catalog by ID. `[]` disables action selection in AvatarChatbot and automatic gestures. |
+| `availableActions` | `ActionInfo[]` | - | Optional host allowlist of configured IDs; `[]` disables selection. Does not create actions. |
 | `enableActionHotkeys` | `boolean` | `true` | Enable keyboard shortcuts |
 | `initialAction` | `string` | - | Action ID to play on load |
 | `initialActionLoop` | `boolean` | `false` | Loop initial action |
+| `ambientActions` | `boolean` | `true` | Occasional idle gestures in both AniaAvatar and AvatarChatbot |
+| `ambientActionMinSeconds` | `number` | `40` | Minimum random idle wait in seconds; clamped to at least 20 |
+| `ambientActionMaxSeconds` | `number` | `90` | Maximum random idle wait; clamped to at least the minimum |
+| `ambientActionIds` | `string[]` | - | Optional filter of IDs for ambient gestures only; `[]` disables ambient gestures |
+| `greetingAction` | `'auto' \| false \| string` | `'auto'` | AvatarChatbot: one gesture per chat opening/wake with autoGreeting. `false` disables it; a string selects an exact configured ID. |
+
+Ambient gestures use the runtime's configured `.ania` actions, intersected with
+the host allowlists. No catalog means no timer. The avatar must be visible (the
+minimized badge also counts), on screen and in a visible tab, idle, with no action
+playing, no typing/listening, and no `prefers-reduced-motion: reduce`. Editing a
+focused input, textarea, select or contenteditable also pauses gestures. Closing
+the widget, switching avatars or unmounting cancels the timer; returning from a
+hidden tab starts a fresh random wait. It uses one timeout and event listeners,
+with no new interval, frame polling or RAF between gestures.
+
+AvatarChatbot supplies speech, STT and draft state automatically.
+A standalone AniaAvatar host can pass `talking`, `isListening` and `isTyping`
+(all default `false`) for interaction outside the widget. Runtime talk/action
+state is checked too. Every action start, including API/hotkeys, postpones the
+next ambient gesture. Responses accept one gesture with a 20-second cooldown;
+they never interrupt listening or an active action. Explicit manual triggers keep
+their existing behavior. Ambient and greeting gestures use `triggerAction`
+without starting action audio; response and hotkey audio behavior is preserved.
+
+`greetingAction="auto"` matches the normalized name **or** ID against `GREETING`,
+`SAUDACAO`, `SAUDAÇÃO`, `WAVE`, or `ACENO` (case/accents ignored). It runs with
+the pending spoken greeting, or once on opening when there is no spoken greeting
+pending (including a flow). Reopening can gesture again; it does not add another
+generic greeting message to the conversation. It respects visibility, reduced
+motion, typing/listening and active actions; an unavailable or blocked greeting
+is skipped for that opening. `autoGreeting={false}` also disables the gesture.
+The ambient ID filter does not restrict greeting selection.
+
+```jsx
+<AvatarChatbot
+  avatarUrl="/avatars/assistant.ania"
+  ambientActionMinSeconds={40}
+  ambientActionMaxSeconds={90}
+  ambientActionIds={['stretch', 'look-around']}
+  greetingAction="auto"
+/>
+```
 
 #### Plugin Props (new in 1.4)
 

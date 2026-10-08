@@ -5,6 +5,7 @@ import { playActionAudio } from '../utils/action-renderer.js';
 export const useActionFrames = ({
   actions = [],
   enabled = true,
+  configureActions = true,
   enableHotkeys = true,
   onActionStart,
   onActionEnd,
@@ -47,7 +48,7 @@ export const useActionFrames = ({
   useEffect(() => {
     if (!animationController || !actions || actions.length === 0) return;
 
-    if (animationController.configureActions) {
+    if (configureActions && animationController.configureActions) {
       animationController.configureActions(actions);
     }
 
@@ -65,7 +66,7 @@ export const useActionFrames = ({
       setActiveAction(id);
       if (onActionStart) onActionStart(id);
     };
-  }, [animationController, actions, onActionStart, onActionEnd]);
+  }, [animationController, actions, configureActions, onActionStart, onActionEnd]);
 
   const triggerAction = useCallback((actionId) => {
     if (!enabled || !animationController) return;

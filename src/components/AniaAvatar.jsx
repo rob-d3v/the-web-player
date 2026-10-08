@@ -3,6 +3,7 @@ import { useRef, useState, useEffect, useCallback, useMemo, forwardRef, useImper
 import { createPortal } from 'react-dom';
 import { Maximize2, Minimize2, X } from 'lucide-react';
 import { THEMES, LOADING_PILL } from '../constants/themes.js';
+import { useAmbientActions } from '../hooks/useAmbientActions.js';
 
 // How long to wait for the host page's `<script src=".../aniaplayer.min.js">` to
 // define `window.AniaPlayer` before declaring it absent. Generous: a cold cache
@@ -21,7 +22,8 @@ import {
   fetchLipSyncConfigById,
   fetchBestLipSyncConfig,
   computeContentHash,
-  buildOpennessMap,
+  readEmbeddedLipSync,
+  resolveLipSyncSettings,
   DEFAULT_LIP_SYNC_SERVER_URL
 } from '../services/lip-sync-api.js';
 
@@ -196,7 +198,7 @@ const AniaAvatarPlayer = forwardRef(({
   // Lip sync props
   // Default ON since 1.13.0. The sweep model works fully without any openness
   // map — branch C never consults one — so this costs nothing and no network.
-  lipSyncEnabled = true,
+  lipSyncEnabled = undefined,
   // Origem da API que guarda as configs de lip sync enviadas pelos criadores.
   // null = usa a mesma origem padrão do player desktop
   // (DEFAULT_LIP_SYNC_SERVER_URL). Aponte para um proxy próprio se preferir.
@@ -219,8 +221,8 @@ const AniaAvatarPlayer = forwardRef(({
   // ({ source, configId, configName, isActive, score, candidates, keyframes })
   // depois que uma config é aplicada — para log/telemetria do host.
   onLipSyncConfig = null,
-  lipSyncIntensity = 0.6,
-  lipSyncResponsiveness = 0.5,
+  lipSyncIntensity = undefined,
+  lipSyncResponsiveness = undefined,
   // A3 sustain (desktop parity): how the mouth behaves during stable speech.
   // 'hold' freezes the anchor frame; 'wiggle' oscillates around it. When null,
   // the value from server config (if any) is used, else 'wiggle'.
@@ -229,6 +231,15 @@ const AniaAvatarPlayer = forwardRef(({
   lipSyncWiggleSpeed = null,
   // Action frame props
   actions = null,
+  availableActions = null,
+  ambientActions = true,
+  ambientActionMinSeconds = 40,
+  ambientActionMaxSeconds = 90,
+  ambientActionIds = null,
+  // O host informa interação que não pertence ao detector de áudio do avatar.
+  isListening = false,
+  isTyping = false,
+  talking = false,
   enableActionHotkeys = true,
   onActionStart,
   onActionEnd,
@@ -269,7 +280,6 @@ const AniaAvatarPlayer = forwardRef(({
   const containerRef = useRef(null);
   const playerRef = useRef(null);
   // Contract used by useAniaAvatarRef: ref.current.playerRef.current = player.
-  useImperativeHandle(ref, () => ({ playerRef }), []);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -337,6 +347,18 @@ const AniaAvatarPlayer = forwardRef(({
     if (typeof document !== "undefined" && document.hidden) doPause();
     else pauseTimerRef.current = setTimeout(doPause, PAUSE_GRACE_MS);
   }, []);
+
+  const isAmbientVisible = useCallback(() => !offscreenRef.current, []);
+  const ambientControls = useAmbientActions(isLoaded ? playerRef.current?.animationController : null, {
+    ambientActions, ambientActionMinSeconds, ambientActionMaxSeconds, ambientActionIds,
+    actions, availableActions, visible: isVisible, isVisible: isAmbientVisible,
+    isTalking: isTalking || talking, isListening, isTyping,
+    onActivity: syncRenderLoop
+  }, [avatarUrl, avatarPassword, externalAvatarData, authToken]);
+  useImperativeHandle(ref, () => ({ playerRef,
+    triggerResponseAction: ambientControls.triggerResponseAction,
+    triggerGreetingAction: ambientControls.triggerGreetingAction
+  }), [ambientControls.triggerResponseAction, ambientControls.triggerGreetingAction]);
 
   useEffect(() => {
     setIsMinimized(startMinimized);
@@ -566,6 +588,7 @@ const AniaAvatarPlayer = forwardRef(({
     const io = new IntersectionObserver((entries) => {
       const entry = entries[entries.length - 1];
       offscreenRef.current = !!entry && !entry.isIntersecting;
+      ambientControls.refresh();
       syncRenderLoop();
     });
     io.observe(containerRef.current);
@@ -573,7 +596,7 @@ const AniaAvatarPlayer = forwardRef(({
       io.disconnect();
       offscreenRef.current = false;
     };
-  }, [isLoaded, syncRenderLoop]);
+  }, [isLoaded, syncRenderLoop, ambientControls.refresh]);
   // Keep the canvas backing store matched to its displayed size (minimize,
   // chat open, window resize, zoom/DPR change).
   useEffect(() => {
@@ -603,6 +626,14 @@ const AniaAvatarPlayer = forwardRef(({
   }, []);
 
   useEffect(() => {
+    // Cada troca tem sua própria carga: respostas antigas não podem recriar o player.
+    let cancelled = false;
+    let checkInterval = null;
+    let initialActionTimer = null;
+    setIsLoaded(false);
+    setError(null);
+    playbackBasisRef.current = null;
+    nativeSizeRef.current = null;
     const loadAvatar = async () => {
       var _a, _b, _c;
       debugLog('[AniaAvatar] loadAvatar called', { isLoading: isLoadingRef.current, hasAniaPlayer: !!window.AniaPlayer, hasContainer: !!containerRef.current, hasPlayer: !!playerRef.current });
@@ -631,10 +662,12 @@ const AniaAvatarPlayer = forwardRef(({
         // Let the host page finish its first render before pulling and
         // decoding a multi-MB .ania (bounded wait; see ANIA_IDLE_TIMEOUT_MS).
         await waitForIdle(ANIA_IDLE_TIMEOUT_MS);
+        if (cancelled) return;
         if (avatarUrl) {
           const fetchStart = performance.now();
 
           const cachedData = await getCachedAvatar(avatarUrl);
+          if (cancelled) return;
 
           if (cachedData) {
             if (avatarUrl.endsWith(".ania")) {
@@ -653,6 +686,7 @@ const AniaAvatarPlayer = forwardRef(({
             }
 
             const response = await fetch(avatarUrl, fetchOptions);
+            if (cancelled) return;
 
             if (!response.ok) {
               throw new Error(`Failed to load avatar: ${response.status} ${response.statusText}`);
@@ -666,10 +700,12 @@ const AniaAvatarPlayer = forwardRef(({
                 throw new Error(tr.t("avatar.error.passwordRequired"));
               }
               avatarData = await decryptAniaFile(encryptedData, avatarPassword ?? "");
+              if (cancelled) return;
 
               await setCachedAvatar(avatarUrl, avatarData, true);
             } else {
               avatarData = await response.json();
+              if (cancelled) return;
               await setCachedAvatar(avatarUrl, avatarData, false);
             }
           }
@@ -678,6 +714,8 @@ const AniaAvatarPlayer = forwardRef(({
         } else {
           throw new Error(tr.t("avatar.error.noSource"));
         }
+
+        if (cancelled) return;
 
         // Only MARKETPLACE files play in a browser. A PERSONAL/licensed export
         // keeps its frames AES-encrypted and needs the DESKTOP AniaPlayer (which
@@ -849,6 +887,7 @@ const AniaAvatarPlayer = forwardRef(({
         }
 
         // Container went away while we were decoding — bail cleanly.
+        if (cancelled) return;
         if (!containerRef.current) {
           isLoadingRef.current = false;
           return;
@@ -882,10 +921,10 @@ const AniaAvatarPlayer = forwardRef(({
 
         const animationConfig = {
           ...avatarData.animation,
-          idle_range_low: Math.floor(avatarData.animation.idleRangeLowValue || 0),
-          idle_range_high: Math.floor(avatarData.animation.idleRangeHighValue || 321),
-          talk_range_low: Math.floor(avatarData.animation.talkRangeLowValue || 327),
-          talk_range_high: Math.floor(avatarData.animation.talkRangeHighValue || 834),
+          idle_range_low: Math.floor(fileAnim.idleRangeLowValue ?? 0),
+          idle_range_high: Math.floor(fileAnim.idleRangeHighValue ?? 321),
+          talk_range_low: Math.floor(fileAnim.talkRangeLowValue ?? 327),
+          talk_range_high: Math.floor(fileAnim.talkRangeHighValue ?? 834),
           current_frame_index: avatarData.animation.currentFrameIndex || 0,
           frame_count: avatarData.video.frames.length,
           is_talking: false,
@@ -937,46 +976,31 @@ const AniaAvatarPlayer = forwardRef(({
         // Configure lip sync. Priority per knob: explicit component props >
         // values authored into the .ania (lipsync.opennessMap + lipsync.tuning,
         // written by the web studio / desktop) > server config > defaults.
-        // A file that carries an authored opennessMap enables lip sync by
-        // itself even when the host didn't pass lipSyncEnabled — the creator
-        // tuned it. Without a server URL we still configure local lip sync so
+        // A validated file also carries the creator's enabled choice unless
+        // the host overrides it. Without a server URL we configure local lip sync so
         // the knobs apply to audio-driven (FFT) lip sync.
-        const fileLipsync = avatarData.lipsync || null;
-        const fileTuning = (fileLipsync && fileLipsync.tuning) || null;
-        const fileOpennessMap =
-          fileLipsync && Array.isArray(fileLipsync.opennessMap) && fileLipsync.opennessMap.length > 0
-            ? fileLipsync.opennessMap
-            : null;
-        const lipSyncActive = lipSyncEnabled || !!fileOpennessMap;
+        const talkLow = animationConfig.talk_range_low;
+        const talkHigh = animationConfig.talk_range_high;
+        const embeddedLipSync = readEmbeddedLipSync(avatarData, talkLow, talkHigh);
+        const fileOpennessMap = embeddedLipSync?.opennessMap;
+        const lipProps = {
+          enabled: lipSyncEnabled,
+          intensity: lipSyncIntensity,
+          responsiveness: lipSyncResponsiveness,
+          sustainStyle: lipSyncSustainStyle,
+          wiggleSpeed: lipSyncWiggleSpeed
+        };
+        const lipSyncActive = resolveLipSyncSettings(embeddedLipSync, lipProps).enabled;
         if (lipSyncActive && player.animationController.configureLipsSync) {
           const applyLipSync = (lipConfig) => {
-            const talkLow = Math.floor((avatarData.animation && avatarData.animation.talkRangeLowValue) || 327);
-            const talkHigh = Math.floor((avatarData.animation && avatarData.animation.talkRangeHighValue) || 834);
-            const openMap = (lipConfig && lipConfig.lips_sync_keyframes)
-              ? buildOpennessMap(lipConfig.lips_sync_keyframes, talkLow, talkHigh)
-              : fileOpennessMap;
-            const sustainStyle = lipSyncSustainStyle
-              || (fileTuning && fileTuning.sustainStyle)
-              || (lipConfig && lipConfig.lips_sync_sustain_style)
-              || 'wiggle';
-            const wiggleSpeed = (lipSyncWiggleSpeed != null)
-              ? lipSyncWiggleSpeed
-              : (fileTuning && fileTuning.wiggleSpeed != null)
-                ? fileTuning.wiggleSpeed
-                : ((lipConfig && lipConfig.lips_sync_wiggle_speed) || 5);
-            const intensity = (fileTuning && fileTuning.intensity != null)
-              ? fileTuning.intensity
-              : ((lipConfig && lipConfig.lips_sync_sync_intensity) || lipSyncIntensity);
-            const responsiveness = (fileTuning && fileTuning.responsiveness != null)
-              ? fileTuning.responsiveness
-              : ((lipConfig && lipConfig.lips_sync_responsiveness) || lipSyncResponsiveness);
+            const lip = resolveLipSyncSettings(embeddedLipSync, lipProps, lipConfig, talkLow, talkHigh);
             player.animationController.configureLipsSync(
-              true,
-              intensity,
-              responsiveness,
-              openMap,
-              sustainStyle,
-              wiggleSpeed
+              lip.enabled,
+              lip.intensity,
+              lip.responsiveness,
+              lip.opennessMap,
+              lip.sustainStyle,
+              lip.wiggleSpeed
             );
           };
 
@@ -988,15 +1012,15 @@ const AniaAvatarPlayer = forwardRef(({
           // com o de melhor cobertura/amplitude (ver scoreLipSyncConfig).
           //
           // Assíncrono de propósito: o avatar já está tocando com o que veio no
-          // arquivo, e a config do servidor entra por cima quando chegar. Nada
+          // arquivo, e a config do servidor completa o que faltar. Nada
           // aqui pode atrasar o primeiro frame.
           const serverUrl = lipSyncAutoFetch
             ? (lipSyncServerUrl || DEFAULT_LIP_SYNC_SERVER_URL)
             : lipSyncServerUrl;
 
           if (serverUrl) {
-            const talkLowForFetch = Math.floor((avatarData.animation && avatarData.animation.talkRangeLowValue) || 327);
-            const talkHighForFetch = Math.floor((avatarData.animation && avatarData.animation.talkRangeHighValue) || 834);
+            const talkLowForFetch = talkLow;
+            const talkHighForFetch = talkHigh;
 
             // O .ania do studio já traz contentHash; o licenciado traz dentro de
             // `license`. Só no último caso recalculamos a partir dos frames
@@ -1026,7 +1050,7 @@ const AniaAvatarPlayer = forwardRef(({
               .then((best) => {
                 // Componente desmontado (ou avatar trocado) enquanto a rede
                 // respondia: aplicar agora mexeria num player morto.
-                if (playerRef.current !== player) return;
+                if (cancelled || playerRef.current !== player) return;
                 applyLipSync(best ? best.config : null);
                 if (best) {
                   debugLog(
@@ -1058,7 +1082,7 @@ const AniaAvatarPlayer = forwardRef(({
               })
               .catch((err) => {
                 console.warn('[AniaAvatar] Lip sync config fetch failed:', err);
-                if (playerRef.current !== player) return;
+                if (cancelled || playerRef.current !== player) return;
                 applyLipSync(null);
               });
             // Enquanto a rede responde, vale o que veio no arquivo/props.
@@ -1099,13 +1123,15 @@ const AniaAvatarPlayer = forwardRef(({
 
         // Trigger initial action after load
         if (initialAction && player.animationController.triggerAction) {
-          setTimeout(() => {
+          initialActionTimer = setTimeout(() => {
+            if (cancelled || playerRef.current !== player) return;
             player.animationController.triggerAction(initialAction);
             if (initialActionLoop) {
               player.animationController.onActionCompleteCallback = () => {
-                if (initialActionLoop && playerRef.current?.animationController) {
-                  setTimeout(() => {
-                    playerRef.current.animationController.triggerAction(initialAction);
+                if (!cancelled && initialActionLoop && playerRef.current === player && player.animationController) {
+                  initialActionTimer = setTimeout(() => {
+                    if (cancelled || playerRef.current !== player) return;
+                    player.animationController.triggerAction(initialAction);
                   }, 100);
                 }
               };
@@ -1113,6 +1139,7 @@ const AniaAvatarPlayer = forwardRef(({
           }, 200);
         }
       } catch (err) {
+        if (cancelled) return;
         console.error("[AniaAvatar] Error loading avatar:", err);
         setError(tr.t("avatar.error.loadFailed", { error: (err && err.message ? err.message : String(err)) }));
         if (onError) onError(err instanceof Error ? err : new Error(String(err)));
@@ -1141,7 +1168,7 @@ const AniaAvatarPlayer = forwardRef(({
       // switched away from — which is exactly when a phone user leaves a page
       // sitting. Elapsed time is the thing being measured, so measure it.
       const waitStartedAt = Date.now();
-      const checkInterval = setInterval(() => {
+      checkInterval = setInterval(() => {
         if (window.AniaPlayer) {
           debugLog('[AniaAvatar] AniaPlayer found after wait!');
           clearInterval(checkInterval);
@@ -1160,9 +1187,15 @@ const AniaAvatarPlayer = forwardRef(({
           if (onError) onError(new Error("AniaPlayer runtime not available"));
         }
       }, PLAYER_WAIT_TICK_MS);
-      return () => clearInterval(checkInterval);
     }
     return () => {
+      cancelled = true;
+      if (checkInterval) clearInterval(checkInterval);
+      if (initialActionTimer) clearTimeout(initialActionTimer);
+      if (pauseTimerRef.current) {
+        clearTimeout(pauseTimerRef.current);
+        pauseTimerRef.current = null;
+      }
       if (playerRef.current) {
         try {
           if (playerRef.current.stop) {

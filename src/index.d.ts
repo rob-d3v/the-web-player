@@ -146,6 +146,18 @@ export interface AniaAvatarProps {
   onLipSyncConfig?: (info: LipSyncConfigInfo) => void;
   // Action frames
   actions?: ActionConfig[];
+  /** Optional host allowlist of actions already configured in the avatar. [] disables them. */
+  availableActions?: ActionInfo[] | null;
+  /** Occasional idle gestures from the avatar's own configured actions. Default true. */
+  ambientActions?: boolean;
+  /** Random idle interval bounds in seconds (defaults 40 and 90, minimum 20). */
+  ambientActionMinSeconds?: number;
+  ambientActionMaxSeconds?: number;
+  ambientActionIds?: string[] | null;
+  /** Interaction state supplied by a standalone host; AvatarChatbot supplies these. */
+  isListening?: boolean;
+  isTyping?: boolean;
+  talking?: boolean;
   enableActionHotkeys?: boolean;
   onActionStart?: (actionId: string) => void;
   onActionEnd?: () => void;
@@ -165,6 +177,8 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   webhookUrl?: string;
   enableTTS?: boolean;
   autoGreeting?: boolean;
+  /** One gesture per chat opening: normalized greeting name/id, false, or exact id. */
+  greetingAction?: 'auto' | false | string;
   showSpeedControls?: boolean;
   talkStartDelay?: number;
   postTalkDelay?: number;
@@ -695,6 +709,8 @@ export interface UseLipSyncResult {
 export interface UseActionFramesOptions {
   actions?: ActionConfig[];
   enabled?: boolean;
+  /** false uses the existing runtime catalog without reconfiguring it. Default true. */
+  configureActions?: boolean;
   enableHotkeys?: boolean;
   onActionStart?: (actionId: string) => void;
   onActionEnd?: () => void;

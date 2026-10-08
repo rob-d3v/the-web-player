@@ -1,5 +1,5 @@
 import { jsx, jsxs } from "react/jsx-runtime";
-import { forwardRef, createElement, useMemo, useRef, useImperativeHandle, useState, useCallback, useEffect, useReducer } from "react";
+import { forwardRef, createElement, useRef, useEffect, useCallback, useMemo, useState, useImperativeHandle, useReducer } from "react";
 import { createPortal } from "react-dom";
 /**
  * @license lucide-react v0.460.0 - ISC
@@ -228,6 +228,170 @@ const LOADING_PILL = {
   dark: { bg: "#0f172a", fg: "#ffffff" },
   light: { bg: "#f8fafc", fg: "#0f172a" }
 };
+const COOLDOWN_MS = 2e4;
+const GREETING_NAMES = /* @__PURE__ */ new Set(["GREETING", "SAUDACAO", "WAVE", "ACENO"]);
+const normalizeName = (value) => String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
+const isEditable = (element) => !!element && (["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName) || element.isContentEditable);
+function createAmbientActions(controller, initialOptions = {}) {
+  var _a, _b;
+  let options = initialOptions;
+  let timer = null;
+  let disposed = false;
+  let lastActionAt = -Infinity;
+  let lastActionId = null;
+  const doc = typeof document === "undefined" ? null : document;
+  const motion = typeof window === "undefined" ? null : (_a = window.matchMedia) == null ? void 0 : _a.call(window, "(prefers-reduced-motion: reduce)");
+  const restores = [];
+  const clear = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+  const configuredActions = () => {
+    var _a2, _b2;
+    const configured = ((_a2 = controller.getActions) == null ? void 0 : _a2.call(controller)) || Object.values(((_b2 = controller.getActionConfigs) == null ? void 0 : _b2.call(controller)) || {});
+    return configured.filter((action) => (action == null ? void 0 : action.id) != null).filter((action) => options.actions == null || options.actions.some((allowed) => String(allowed.id) === String(action.id))).filter((action) => options.availableActions == null || options.availableActions.some((allowed) => String(allowed.id) === String(action.id)));
+  };
+  const canAct = (allowTalking = false, allowTyping = false) => {
+    var _a2, _b2;
+    return !disposed && options.visible !== false && ((_a2 = options.isVisible) == null ? void 0 : _a2.call(options)) !== false && (!doc || doc.visibilityState === "visible") && !(motion == null ? void 0 : motion.matches) && !options.isListening && (allowTyping || !options.isTyping && !isEditable(doc == null ? void 0 : doc.activeElement)) && (allowTalking || !options.isTalking && !controller.isTalking) && !((_b2 = controller.isActionPlaying) == null ? void 0 : _b2.call(controller));
+  };
+  const ambientCandidates = () => configuredActions().filter((action) => options.ambientActionIds == null || options.ambientActionIds.some((id2) => String(id2) === String(action.id)));
+  const schedule = () => {
+    clear();
+    if (options.ambientActions === false || !canAct() || !ambientCandidates().length) return;
+    const seconds = (value, fallback) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.min(value, 2147483) : fallback;
+    const min2 = Math.max(20, seconds(options.ambientActionMinSeconds, 40));
+    const max = Math.max(min2, seconds(options.ambientActionMaxSeconds, 90));
+    const delay = (min2 + Math.random() * (max - min2)) * 1e3;
+    timer = setTimeout(() => {
+      timer = null;
+      if (!canAct()) return;
+      if (Date.now() - lastActionAt < COOLDOWN_MS) {
+        schedule();
+        return;
+      }
+      let candidates = ambientCandidates();
+      if (candidates.length > 1) {
+        candidates = candidates.filter((action) => String(action.id) !== String(lastActionId));
+      }
+      if (!candidates.length) return;
+      controller.triggerAction(candidates[Math.floor(Math.random() * candidates.length)].id);
+    }, Math.max(delay, COOLDOWN_MS - (Date.now() - lastActionAt)));
+  };
+  const wrap = (name, after) => {
+    const original = controller[name];
+    if (typeof original !== "function") return;
+    const hadOwn = Object.prototype.hasOwnProperty.call(controller, name);
+    const wrapped = function(...args) {
+      const result = original.apply(this, args);
+      after(result, args);
+      schedule();
+      return result;
+    };
+    controller[name] = wrapped;
+    restores.push(() => {
+      if (controller[name] !== wrapped) return;
+      if (hadOwn) controller[name] = original;
+      else delete controller[name];
+    });
+  };
+  wrap("triggerAction", (result, args) => {
+    if (result === false) return;
+    lastActionAt = Date.now();
+    lastActionId = args[0];
+  });
+  wrap("setTalkingState", () => {
+  });
+  wrap("configureActions", () => {
+  });
+  wrap("cancelAction", () => {
+    var _a2;
+    (_a2 = options.onActivity) == null ? void 0 : _a2.call(options);
+  });
+  const refresh = () => schedule();
+  const onFocusOut = () => {
+    clear();
+    queueMicrotask(refresh);
+  };
+  doc == null ? void 0 : doc.addEventListener("visibilitychange", refresh);
+  doc == null ? void 0 : doc.addEventListener("focusin", refresh);
+  doc == null ? void 0 : doc.addEventListener("focusout", onFocusOut);
+  if (motion == null ? void 0 : motion.addEventListener) motion.addEventListener("change", refresh);
+  else (_b = motion == null ? void 0 : motion.addListener) == null ? void 0 : _b.call(motion, refresh);
+  schedule();
+  return {
+    update(nextOptions) {
+      options = nextOptions;
+      schedule();
+    },
+    refresh,
+    triggerResponseAction(id2, trigger) {
+      if (!canAct(true, true) || Date.now() - lastActionAt < COOLDOWN_MS || !configuredActions().some((action) => String(action.id) === String(id2))) return false;
+      return (trigger ? trigger(id2) : controller.triggerAction(id2)) !== false;
+    },
+    triggerGreetingAction(setting = "auto") {
+      if (setting === false || !canAct(true)) return false;
+      const candidates = configuredActions();
+      const action = setting === "auto" ? candidates.find((candidate) => GREETING_NAMES.has(normalizeName(candidate.id)) || GREETING_NAMES.has(normalizeName(candidate.name))) : candidates.find((candidate) => String(candidate.id) === String(setting));
+      return action ? controller.triggerAction(action.id) !== false : false;
+    },
+    dispose() {
+      var _a2;
+      disposed = true;
+      clear();
+      doc == null ? void 0 : doc.removeEventListener("visibilitychange", refresh);
+      doc == null ? void 0 : doc.removeEventListener("focusin", refresh);
+      doc == null ? void 0 : doc.removeEventListener("focusout", onFocusOut);
+      if (motion == null ? void 0 : motion.removeEventListener) motion.removeEventListener("change", refresh);
+      else (_a2 = motion == null ? void 0 : motion.removeListener) == null ? void 0 : _a2.call(motion, refresh);
+      restores.reverse().forEach((restore) => restore());
+    }
+  };
+}
+function useAmbientActions(controller, options, sources = []) {
+  const policyRef = useRef(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  useEffect(() => {
+    if (!controller) return;
+    const policy = createAmbientActions(controller, optionsRef.current);
+    policyRef.current = policy;
+    return () => {
+      policy.dispose();
+      if (policyRef.current === policy) policyRef.current = null;
+    };
+  }, [controller, ...sources]);
+  useEffect(() => {
+    var _a;
+    (_a = policyRef.current) == null ? void 0 : _a.update(optionsRef.current);
+  }, [
+    options.ambientActions,
+    options.ambientActionMinSeconds,
+    options.ambientActionMaxSeconds,
+    options.ambientActionIds,
+    options.actions,
+    options.availableActions,
+    options.visible,
+    options.isTalking,
+    options.isTyping,
+    options.isListening,
+    options.onActivity,
+    options.isVisible
+  ]);
+  const refresh = useCallback(() => {
+    var _a;
+    return (_a = policyRef.current) == null ? void 0 : _a.refresh();
+  }, []);
+  const triggerResponseAction = useCallback((id2, trigger) => {
+    var _a;
+    return (_a = policyRef.current) == null ? void 0 : _a.triggerResponseAction(id2, trigger);
+  }, []);
+  const triggerGreetingAction = useCallback((setting) => {
+    var _a;
+    return (_a = policyRef.current) == null ? void 0 : _a.triggerGreetingAction(setting);
+  }, []);
+  return { refresh, triggerResponseAction, triggerGreetingAction };
+}
 const chat$2Z = {
   input: {
     placeholder: "Иҭажәгал шәацҳара...",
@@ -12457,6 +12621,41 @@ const parseLipSyncConfig = (raw) => {
   }
   return data;
 };
+const readEmbeddedLipSync = (avatarData, talkLow, talkHigh) => {
+  var _a, _b;
+  const data = avatarData.lipsync;
+  const frameCount = ((_b = (_a = avatarData.video) == null ? void 0 : _a.frames) == null ? void 0 : _b.length) || 0;
+  if (!data || typeof data !== "object" || !Number.isInteger(talkLow) || !Number.isInteger(talkHigh) || talkLow < 0 || talkHigh >= frameCount || talkHigh <= talkLow) return null;
+  if (!Array.isArray(data.talkRange) || data.talkRange[0] !== talkLow || data.talkRange[1] !== talkHigh || data.talkRange.length !== 2) return null;
+  if (!Array.isArray(data.opennessMap)) return null;
+  const values = data.opennessMap.length === frameCount ? data.opennessMap.slice(talkLow, talkHigh + 1) : data.opennessMap;
+  if (values.length !== talkHigh - talkLow + 1) return null;
+  const opennessMap = values.map(
+    (v) => typeof v === "number" || typeof v === "string" && v.trim() ? Number(v) : NaN
+  );
+  if (!opennessMap.every((v) => Number.isFinite(v) && v >= 0 && v <= 1)) return null;
+  const tuning = data.tuning && typeof data.tuning === "object" ? data.tuning : {};
+  const number = (key, fallback, low, high) => {
+    const value = tuning[key] == null ? NaN : Number(tuning[key]);
+    return Number.isFinite(value) ? Math.min(high, Math.max(low, value)) : fallback;
+  };
+  return {
+    enabled: data.enabled !== false,
+    opennessMap,
+    intensity: number("intensity", 0.6, 0, 1),
+    responsiveness: number("responsiveness", 0.5, 0.05, 1),
+    sustainStyle: tuning.sustainStyle === "hold" ? "hold" : "wiggle",
+    wiggleSpeed: Math.floor(number("wiggleSpeed", 2, 1, 6))
+  };
+};
+const resolveLipSyncSettings = (embedded, props = {}, server = null, talkLow = 0, talkHigh = 0) => ({
+  enabled: props.enabled ?? (embedded == null ? void 0 : embedded.enabled) ?? true,
+  opennessMap: props.opennessMap ?? (embedded == null ? void 0 : embedded.opennessMap) ?? ((server == null ? void 0 : server.lips_sync_keyframes) ? buildOpennessMap(server.lips_sync_keyframes, talkLow, talkHigh) : null),
+  intensity: props.intensity ?? (embedded == null ? void 0 : embedded.intensity) ?? (server == null ? void 0 : server.lips_sync_sync_intensity) ?? 0.6,
+  responsiveness: props.responsiveness ?? (embedded == null ? void 0 : embedded.responsiveness) ?? (server == null ? void 0 : server.lips_sync_responsiveness) ?? 0.5,
+  sustainStyle: props.sustainStyle ?? (embedded == null ? void 0 : embedded.sustainStyle) ?? (server == null ? void 0 : server.lips_sync_sustain_style) ?? "wiggle",
+  wiggleSpeed: props.wiggleSpeed ?? (embedded == null ? void 0 : embedded.wiggleSpeed) ?? (server == null ? void 0 : server.lips_sync_wiggle_speed) ?? 5
+});
 const computeContentHash = async (frames) => {
   if (!Array.isArray(frames) || frames.length === 0) return null;
   if (typeof crypto === "undefined" || !crypto.subtle) return null;
@@ -12776,7 +12975,7 @@ const AniaAvatarPlayer = forwardRef(({
   // Lip sync props
   // Default ON since 1.13.0. The sweep model works fully without any openness
   // map — branch C never consults one — so this costs nothing and no network.
-  lipSyncEnabled = true,
+  lipSyncEnabled = void 0,
   // Origem da API que guarda as configs de lip sync enviadas pelos criadores.
   // null = usa a mesma origem padrão do player desktop
   // (DEFAULT_LIP_SYNC_SERVER_URL). Aponte para um proxy próprio se preferir.
@@ -12799,8 +12998,8 @@ const AniaAvatarPlayer = forwardRef(({
   // ({ source, configId, configName, isActive, score, candidates, keyframes })
   // depois que uma config é aplicada — para log/telemetria do host.
   onLipSyncConfig = null,
-  lipSyncIntensity = 0.6,
-  lipSyncResponsiveness = 0.5,
+  lipSyncIntensity = void 0,
+  lipSyncResponsiveness = void 0,
   // A3 sustain (desktop parity): how the mouth behaves during stable speech.
   // 'hold' freezes the anchor frame; 'wiggle' oscillates around it. When null,
   // the value from server config (if any) is used, else 'wiggle'.
@@ -12809,6 +13008,15 @@ const AniaAvatarPlayer = forwardRef(({
   lipSyncWiggleSpeed = null,
   // Action frame props
   actions = null,
+  availableActions = null,
+  ambientActions = true,
+  ambientActionMinSeconds = 40,
+  ambientActionMaxSeconds = 90,
+  ambientActionIds = null,
+  // O host informa interação que não pertence ao detector de áudio do avatar.
+  isListening = false,
+  isTyping = false,
+  talking = false,
   enableActionHotkeys = true,
   onActionStart,
   onActionEnd,
@@ -12840,13 +13048,13 @@ const AniaAvatarPlayer = forwardRef(({
   onToggleMinimize,
   children
 }, ref) => {
+  var _a;
   const tr2 = useMemo(
     () => createTranslator(locale, messagesOverride || void 0),
     [locale, messagesOverride]
   );
   const containerRef = useRef(null);
   const playerRef = useRef(null);
-  useImperativeHandle(ref, () => ({ playerRef }), []);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
@@ -12904,6 +13112,26 @@ const AniaAvatarPlayer = forwardRef(({
     if (typeof document !== "undefined" && document.hidden) doPause();
     else pauseTimerRef.current = setTimeout(doPause, PAUSE_GRACE_MS);
   }, []);
+  const isAmbientVisible = useCallback(() => !offscreenRef.current, []);
+  const ambientControls = useAmbientActions(isLoaded ? (_a = playerRef.current) == null ? void 0 : _a.animationController : null, {
+    ambientActions,
+    ambientActionMinSeconds,
+    ambientActionMaxSeconds,
+    ambientActionIds,
+    actions,
+    availableActions,
+    visible: isVisible,
+    isVisible: isAmbientVisible,
+    isTalking: isTalking || talking,
+    isListening,
+    isTyping,
+    onActivity: syncRenderLoop
+  }, [avatarUrl, avatarPassword, externalAvatarData, authToken]);
+  useImperativeHandle(ref, () => ({
+    playerRef,
+    triggerResponseAction: ambientControls.triggerResponseAction,
+    triggerGreetingAction: ambientControls.triggerGreetingAction
+  }), [ambientControls.triggerResponseAction, ambientControls.triggerGreetingAction]);
   useEffect(() => {
     setIsMinimized(startMinimized);
   }, [startMinimized]);
@@ -12930,14 +13158,14 @@ const AniaAvatarPlayer = forwardRef(({
     }
   }, [isMinimized]);
   const handleDragStart = (e) => {
-    var _a;
+    var _a2;
     if (!draggable || !isMinimized) return;
     e.preventDefault();
     e.stopPropagation();
     isDraggingRef.current = true;
     setIsDragging(true);
     hasDraggedRef.current = false;
-    const touch = ((_a = e.touches) == null ? void 0 : _a[0]) || e;
+    const touch = ((_a2 = e.touches) == null ? void 0 : _a2[0]) || e;
     dragStartRef.current = { x: touch.clientX, y: touch.clientY };
     if (outerContainerRef.current) {
       const rect = outerContainerRef.current.getBoundingClientRect();
@@ -12945,10 +13173,10 @@ const AniaAvatarPlayer = forwardRef(({
     }
   };
   const handleDragMove = (e) => {
-    var _a;
+    var _a2;
     if (!isDraggingRef.current) return;
     e.preventDefault();
-    const touch = ((_a = e.touches) == null ? void 0 : _a[0]) || e;
+    const touch = ((_a2 = e.touches) == null ? void 0 : _a2[0]) || e;
     const deltaX = touch.clientX - dragStartRef.current.x;
     const deltaY = touch.clientY - dragStartRef.current.y;
     if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
@@ -13003,7 +13231,7 @@ const AniaAvatarPlayer = forwardRef(({
         const source = audioContext.createMediaStreamDestination();
         analyser.connect(destination);
         const detectAudioLoop = () => {
-          var _a;
+          var _a2;
           if (!analyserRef.current || !isActive) return;
           const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
           analyserRef.current.getByteFrequencyData(dataArray);
@@ -13017,7 +13245,7 @@ const AniaAvatarPlayer = forwardRef(({
           const nowTalking = average > threshold;
           if (nowTalking !== wasTalking) {
             setIsTalking(nowTalking);
-            if ((_a = playerRef.current) == null ? void 0 : _a.animationController) {
+            if ((_a2 = playerRef.current) == null ? void 0 : _a2.animationController) {
               playerRef.current.animationController.setTalkingState(nowTalking);
             }
             if (nowTalking && onTalkStart) {
@@ -13089,6 +13317,7 @@ const AniaAvatarPlayer = forwardRef(({
     const io = new IntersectionObserver((entries) => {
       const entry = entries[entries.length - 1];
       offscreenRef.current = !!entry && !entry.isIntersecting;
+      ambientControls.refresh();
       syncRenderLoop();
     });
     io.observe(containerRef.current);
@@ -13096,7 +13325,7 @@ const AniaAvatarPlayer = forwardRef(({
       io.disconnect();
       offscreenRef.current = false;
     };
-  }, [isLoaded, syncRenderLoop]);
+  }, [isLoaded, syncRenderLoop, ambientControls.refresh]);
   useEffect(() => {
     const player = playerRef.current;
     if (!isLoaded || !player || !player.canvas) return;
@@ -13123,6 +13352,13 @@ const AniaAvatarPlayer = forwardRef(({
     }
   }, []);
   useEffect(() => {
+    let cancelled = false;
+    let checkInterval = null;
+    let initialActionTimer = null;
+    setIsLoaded(false);
+    setError(null);
+    playbackBasisRef.current = null;
+    nativeSizeRef.current = null;
     const loadAvatar = async () => {
       debugLog("[AniaAvatar] loadAvatar called", { isLoading: isLoadingRef.current, hasAniaPlayer: !!window.AniaPlayer, hasContainer: !!containerRef.current, hasPlayer: !!playerRef.current });
       if (isLoadingRef.current) {
@@ -13148,9 +13384,11 @@ const AniaAvatarPlayer = forwardRef(({
       try {
         let avatarData;
         await waitForIdle(ANIA_IDLE_TIMEOUT_MS);
+        if (cancelled) return;
         if (avatarUrl) {
           const fetchStart = performance.now();
           const cachedData = await getCachedAvatar(avatarUrl);
+          if (cancelled) return;
           if (cachedData) {
             if (avatarUrl.endsWith(".ania")) {
               avatarData = cachedData;
@@ -13167,6 +13405,7 @@ const AniaAvatarPlayer = forwardRef(({
               };
             }
             const response = await fetch(avatarUrl, fetchOptions);
+            if (cancelled) return;
             if (!response.ok) {
               throw new Error(`Failed to load avatar: ${response.status} ${response.statusText}`);
             }
@@ -13176,9 +13415,11 @@ const AniaAvatarPlayer = forwardRef(({
                 throw new Error(tr2.t("avatar.error.passwordRequired"));
               }
               avatarData = await decryptAniaFile(encryptedData, avatarPassword ?? "");
+              if (cancelled) return;
               await setCachedAvatar(avatarUrl, avatarData, true);
             } else {
               avatarData = await response.json();
+              if (cancelled) return;
               await setCachedAvatar(avatarUrl, avatarData, false);
             }
           }
@@ -13187,6 +13428,7 @@ const AniaAvatarPlayer = forwardRef(({
         } else {
           throw new Error(tr2.t("avatar.error.noSource"));
         }
+        if (cancelled) return;
         const framesInfo = inspectAvatarFrames(avatarData);
         if (!framesInfo.playable) {
           if (avatarUrl) await deleteCachedAvatar(avatarUrl);
@@ -13281,6 +13523,7 @@ const AniaAvatarPlayer = forwardRef(({
             }
           }
         }
+        if (cancelled) return;
         if (!containerRef.current) {
           isLoadingRef.current = false;
           return;
@@ -13311,10 +13554,10 @@ const AniaAvatarPlayer = forwardRef(({
         player.canvas.style.display = "block";
         const animationConfig = {
           ...avatarData.animation,
-          idle_range_low: Math.floor(avatarData.animation.idleRangeLowValue || 0),
-          idle_range_high: Math.floor(avatarData.animation.idleRangeHighValue || 321),
-          talk_range_low: Math.floor(avatarData.animation.talkRangeLowValue || 327),
-          talk_range_high: Math.floor(avatarData.animation.talkRangeHighValue || 834),
+          idle_range_low: Math.floor(fileAnim.idleRangeLowValue ?? 0),
+          idle_range_high: Math.floor(fileAnim.idleRangeHighValue ?? 321),
+          talk_range_low: Math.floor(fileAnim.talkRangeLowValue ?? 327),
+          talk_range_high: Math.floor(fileAnim.talkRangeHighValue ?? 834),
           current_frame_index: avatarData.animation.currentFrameIndex || 0,
           frame_count: avatarData.video.frames.length,
           is_talking: false,
@@ -13355,32 +13598,34 @@ const AniaAvatarPlayer = forwardRef(({
         } else if (actions && actions.length > 0 && player.animationController.configureActions) {
           player.animationController.configureActions(actions);
         }
-        const fileLipsync = avatarData.lipsync || null;
-        const fileTuning = fileLipsync && fileLipsync.tuning || null;
-        const fileOpennessMap = fileLipsync && Array.isArray(fileLipsync.opennessMap) && fileLipsync.opennessMap.length > 0 ? fileLipsync.opennessMap : null;
-        const lipSyncActive = lipSyncEnabled || !!fileOpennessMap;
+        const talkLow = animationConfig.talk_range_low;
+        const talkHigh = animationConfig.talk_range_high;
+        const embeddedLipSync = readEmbeddedLipSync(avatarData, talkLow, talkHigh);
+        const fileOpennessMap = embeddedLipSync == null ? void 0 : embeddedLipSync.opennessMap;
+        const lipProps = {
+          enabled: lipSyncEnabled,
+          intensity: lipSyncIntensity,
+          responsiveness: lipSyncResponsiveness,
+          sustainStyle: lipSyncSustainStyle,
+          wiggleSpeed: lipSyncWiggleSpeed
+        };
+        const lipSyncActive = resolveLipSyncSettings(embeddedLipSync, lipProps).enabled;
         if (lipSyncActive && player.animationController.configureLipsSync) {
           const applyLipSync = (lipConfig) => {
-            const talkLow = Math.floor(avatarData.animation && avatarData.animation.talkRangeLowValue || 327);
-            const talkHigh = Math.floor(avatarData.animation && avatarData.animation.talkRangeHighValue || 834);
-            const openMap = lipConfig && lipConfig.lips_sync_keyframes ? buildOpennessMap(lipConfig.lips_sync_keyframes, talkLow, talkHigh) : fileOpennessMap;
-            const sustainStyle = lipSyncSustainStyle || fileTuning && fileTuning.sustainStyle || lipConfig && lipConfig.lips_sync_sustain_style || "wiggle";
-            const wiggleSpeed = lipSyncWiggleSpeed != null ? lipSyncWiggleSpeed : fileTuning && fileTuning.wiggleSpeed != null ? fileTuning.wiggleSpeed : lipConfig && lipConfig.lips_sync_wiggle_speed || 5;
-            const intensity = fileTuning && fileTuning.intensity != null ? fileTuning.intensity : lipConfig && lipConfig.lips_sync_sync_intensity || lipSyncIntensity;
-            const responsiveness = fileTuning && fileTuning.responsiveness != null ? fileTuning.responsiveness : lipConfig && lipConfig.lips_sync_responsiveness || lipSyncResponsiveness;
+            const lip = resolveLipSyncSettings(embeddedLipSync, lipProps, lipConfig, talkLow, talkHigh);
             player.animationController.configureLipsSync(
-              true,
-              intensity,
-              responsiveness,
-              openMap,
-              sustainStyle,
-              wiggleSpeed
+              lip.enabled,
+              lip.intensity,
+              lip.responsiveness,
+              lip.opennessMap,
+              lip.sustainStyle,
+              lip.wiggleSpeed
             );
           };
           const serverUrl = lipSyncAutoFetch ? lipSyncServerUrl || DEFAULT_LIP_SYNC_SERVER_URL : lipSyncServerUrl;
           if (serverUrl) {
-            const talkLowForFetch = Math.floor(avatarData.animation && avatarData.animation.talkRangeLowValue || 327);
-            const talkHighForFetch = Math.floor(avatarData.animation && avatarData.animation.talkRangeHighValue || 834);
+            const talkLowForFetch = talkLow;
+            const talkHighForFetch = talkHigh;
             const resolveContentHash = async () => {
               if (avatarData.contentHash) return avatarData.contentHash;
               if (avatarData.license && avatarData.license.contentHash) return avatarData.license.contentHash;
@@ -13399,7 +13644,7 @@ const AniaAvatarPlayer = forwardRef(({
                 maxCandidates: lipSyncMaxCandidates
               });
             }).then((best) => {
-              if (playerRef.current !== player) return;
+              if (cancelled || playerRef.current !== player) return;
               applyLipSync(best ? best.config : null);
               if (best) {
                 debugLog(
@@ -13429,7 +13674,7 @@ const AniaAvatarPlayer = forwardRef(({
               }
             }).catch((err) => {
               console.warn("[AniaAvatar] Lip sync config fetch failed:", err);
-              if (playerRef.current !== player) return;
+              if (cancelled || playerRef.current !== player) return;
               applyLipSync(null);
             });
             applyLipSync(null);
@@ -13458,14 +13703,15 @@ const AniaAvatarPlayer = forwardRef(({
           onLoad(player);
         }
         if (initialAction && player.animationController.triggerAction) {
-          setTimeout(() => {
+          initialActionTimer = setTimeout(() => {
+            if (cancelled || playerRef.current !== player) return;
             player.animationController.triggerAction(initialAction);
             if (initialActionLoop) {
               player.animationController.onActionCompleteCallback = () => {
-                var _a;
-                if (initialActionLoop && ((_a = playerRef.current) == null ? void 0 : _a.animationController)) {
-                  setTimeout(() => {
-                    playerRef.current.animationController.triggerAction(initialAction);
+                if (!cancelled && initialActionLoop && playerRef.current === player && player.animationController) {
+                  initialActionTimer = setTimeout(() => {
+                    if (cancelled || playerRef.current !== player) return;
+                    player.animationController.triggerAction(initialAction);
                   }, 100);
                 }
               };
@@ -13473,6 +13719,7 @@ const AniaAvatarPlayer = forwardRef(({
           }, 200);
         }
       } catch (err) {
+        if (cancelled) return;
         console.error("[AniaAvatar] Error loading avatar:", err);
         setError(tr2.t("avatar.error.loadFailed", { error: err && err.message ? err.message : String(err) }));
         if (onError) onError(err instanceof Error ? err : new Error(String(err)));
@@ -13485,7 +13732,7 @@ const AniaAvatarPlayer = forwardRef(({
     } else {
       debugLog("[AniaAvatar] Waiting for AniaPlayer script...");
       const waitStartedAt = Date.now();
-      const checkInterval = setInterval(() => {
+      checkInterval = setInterval(() => {
         if (window.AniaPlayer) {
           debugLog("[AniaAvatar] AniaPlayer found after wait!");
           clearInterval(checkInterval);
@@ -13502,9 +13749,15 @@ const AniaAvatarPlayer = forwardRef(({
           if (onError) onError(new Error("AniaPlayer runtime not available"));
         }
       }, PLAYER_WAIT_TICK_MS);
-      return () => clearInterval(checkInterval);
     }
     return () => {
+      cancelled = true;
+      if (checkInterval) clearInterval(checkInterval);
+      if (initialActionTimer) clearTimeout(initialActionTimer);
+      if (pauseTimerRef.current) {
+        clearTimeout(pauseTimerRef.current);
+        pauseTimerRef.current = null;
+      }
       if (playerRef.current) {
         try {
           if (playerRef.current.stop) {
@@ -13568,9 +13821,9 @@ const AniaAvatarPlayer = forwardRef(({
   };
   const currentDimensions = getMobileSize();
   const enforceCanvasStyles = useCallback(() => {
-    var _a;
+    var _a2;
     if (enforcingRef.current) return;
-    const canvas = (_a = playerRef.current) == null ? void 0 : _a.canvas;
+    const canvas = (_a2 = playerRef.current) == null ? void 0 : _a2.canvas;
     if (!canvas) return;
     enforcingRef.current = true;
     const s = canvas.style;
@@ -13613,8 +13866,8 @@ const AniaAvatarPlayer = forwardRef(({
     enforceCanvasStyles();
   }, [isMinimized, width, height, preserveQuality, isMobile, mobileMinimizedSize, isLoaded, enforceCanvasStyles]);
   useEffect(() => {
-    var _a;
-    if (!isLoaded || !((_a = playerRef.current) == null ? void 0 : _a.canvas)) return;
+    var _a2;
+    if (!isLoaded || !((_a2 = playerRef.current) == null ? void 0 : _a2.canvas)) return;
     const canvas = playerRef.current.canvas;
     if (!styleTagRef.current) {
       const style = document.createElement("style");
@@ -16368,6 +16621,7 @@ const playActionAudio = (audioBase64, delayMs = 0) => {
 const useActionFrames = ({
   actions = [],
   enabled = true,
+  configureActions = true,
   enableHotkeys = true,
   onActionStart,
   onActionEnd,
@@ -16396,7 +16650,7 @@ const useActionFrames = ({
   }, [actions]);
   useEffect(() => {
     if (!animationController || !actions || actions.length === 0) return;
-    if (animationController.configureActions) {
+    if (configureActions && animationController.configureActions) {
       animationController.configureActions(actions);
     }
     animationController.onActionCompleteCallback = () => {
@@ -16411,7 +16665,7 @@ const useActionFrames = ({
       setActiveAction(id2);
       if (onActionStart) onActionStart(id2);
     };
-  }, [animationController, actions, onActionStart, onActionEnd]);
+  }, [animationController, actions, configureActions, onActionStart, onActionEnd]);
   const triggerAction = useCallback((actionId) => {
     if (!enabled || !animationController) return;
     const actionConfig = actions.find((a) => a.id === actionId);
@@ -17787,12 +18041,19 @@ const AvatarChatbotWidget = ({
   lipSyncConfigId = null,
   lipSyncMaxCandidates = 5,
   onLipSyncConfig = null,
-  lipSyncIntensity = 0.6,
-  lipSyncResponsiveness = 0.5,
+  // Sem override do host, o AniaAvatar resolve o tuning gravado no arquivo.
+  lipSyncIntensity = void 0,
+  lipSyncResponsiveness = void 0,
   lipSyncSustainStyle = null,
   lipSyncWiggleSpeed = null,
   // Action frame props
   actions = null,
+  availableActions: hostAvailableActions = null,
+  ambientActions = true,
+  ambientActionMinSeconds = 40,
+  ambientActionMaxSeconds = 90,
+  ambientActionIds = null,
+  greetingAction = "auto",
   enableActionHotkeys = true,
   // Initial action props
   initialAction = null,
@@ -17877,10 +18138,18 @@ const AvatarChatbotWidget = ({
   }, []);
   const [inputMessage, setInputMessage] = useState("");
   const [avatarRef, setAvatarRef] = useState(null);
+  const actionControlsRef = useRef(null);
   const [systemMessages, setSystemMessages] = useState([]);
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [currentIdleSpeed, setCurrentIdleSpeed] = useState(idleSpeed);
   const [currentTalkSpeed, setCurrentTalkSpeed] = useState(talkSpeed);
+  const speedSourceRef = useRef({ avatarUrl, avatarPassword, avatarData });
+  const speedsBelongToAvatar = speedSourceRef.current.avatarUrl === avatarUrl && speedSourceRef.current.avatarPassword === avatarPassword && speedSourceRef.current.avatarData === avatarData;
+  useEffect(() => {
+    speedSourceRef.current = { avatarUrl, avatarPassword, avatarData };
+    setCurrentIdleSpeed(idleSpeed);
+    setCurrentTalkSpeed(talkSpeed);
+  }, [avatarUrl, avatarPassword, avatarData]);
   useEffect(() => {
     if (typeof idleSpeed === "number") setCurrentIdleSpeed(idleSpeed);
   }, [idleSpeed]);
@@ -17889,6 +18158,11 @@ const AvatarChatbotWidget = ({
   }, [talkSpeed]);
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [avatarFailed, setAvatarFailed] = useState(false);
+  useEffect(() => {
+    setIsAvatarLoaded(false);
+    setAvatarRef(null);
+    setAvatarFailed(false);
+  }, [avatarUrl, avatarPassword, avatarData, authToken]);
   const [isCurrentlyMinimized, setIsCurrentlyMinimized] = useState(startMinimized);
   const [attachments, setAttachments] = useState([]);
   const [flowInputValue, setFlowInputValue] = useState("");
@@ -17989,9 +18263,15 @@ const AvatarChatbotWidget = ({
     lipSyncConnectRef.current = lipSync.connectAudioElement;
   }, [lipSync.connectAudioElement]);
   const animationController = ((_b = (_a = avatarRef == null ? void 0 : avatarRef.playerRef) == null ? void 0 : _a.current) == null ? void 0 : _b.animationController) || null;
+  const configuredActions = useMemo(() => {
+    var _a2, _b2;
+    const configured = ((_a2 = animationController == null ? void 0 : animationController.getActions) == null ? void 0 : _a2.call(animationController)) || Object.values(((_b2 = animationController == null ? void 0 : animationController.getActionConfigs) == null ? void 0 : _b2.call(animationController)) || {});
+    return configured.filter((action) => actions == null || actions.some((allowed) => String(allowed.id) === String(action.id))).filter((action) => hostAvailableActions == null || hostAvailableActions.some((allowed) => String(allowed.id) === String(action.id)));
+  }, [animationController, actions, hostAvailableActions]);
   const { activeAction, availableActions, triggerAction: triggerActionFrame, cancelAction: cancelActionFrame } = useActionFrames({
-    actions: actions || EMPTY_ACTIONS,
+    actions: configuredActions.length ? configuredActions : EMPTY_ACTIONS,
     enabled: isAvatarLoaded,
+    configureActions: false,
     enableHotkeys: enableActionHotkeys,
     animationController,
     onActionStart: void 0,
@@ -18173,7 +18453,8 @@ const AvatarChatbotWidget = ({
     // Localize the friendly fallback copy (chat.error.generic) shown on failure.
     translate: tr2.t,
     onActionTriggered: (actionId) => {
-      if (triggerActionFrame) triggerActionFrame(actionId);
+      var _a2;
+      (_a2 = actionControlsRef.current) == null ? void 0 : _a2.triggerResponseAction(actionId, triggerActionFrame);
     },
     onResponse: (botMessage) => {
       if (enableTTS && ttsEnabled && botMessage.content) {
@@ -18390,11 +18671,38 @@ const AvatarChatbotWidget = ({
       clearTimeout(timer);
     };
   }, [autoGreeting, isAvatarLoaded, activeFlow]);
+  const greetingOpeningRef = useRef(null);
+  const playOpeningGreetingAction = useCallback(() => {
+    var _a2;
+    if (!animationController || greetingOpeningRef.current === animationController) return;
+    greetingOpeningRef.current = animationController;
+    (_a2 = actionControlsRef.current) == null ? void 0 : _a2.triggerGreetingAction(greetingAction);
+  }, [animationController, greetingAction]);
+  useEffect(() => {
+    if (isCurrentlyMinimized) {
+      greetingOpeningRef.current = null;
+      return;
+    }
+    if (!autoGreeting || !isAvatarLoaded || !animationController || greetingOpeningRef.current === animationController) return;
+    if (ttsEnabled && greetingPendingRef.current && !activeFlow) return;
+    const timer = setTimeout(playOpeningGreetingAction, enableTTS && !ttsEnabled ? 1500 : 500);
+    return () => clearTimeout(timer);
+  }, [
+    autoGreeting,
+    isAvatarLoaded,
+    isCurrentlyMinimized,
+    animationController,
+    playOpeningGreetingAction,
+    enableTTS,
+    ttsEnabled,
+    activeFlow
+  ]);
   useEffect(() => {
     if (ttsEnabled && greetingPendingRef.current && speakRef.current && !isCurrentlyMinimized) {
       const greetingText = greetingPendingRef.current;
       greetingPendingRef.current = null;
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        if (autoGreeting) playOpeningGreetingAction();
         speakRef.current(greetingText, {
           lang: ttsLang,
           rate: ttsRate,
@@ -18403,8 +18711,9 @@ const AvatarChatbotWidget = ({
           cancelPrevious: true
         });
       }, 500);
+      return () => clearTimeout(timer);
     }
-  }, [ttsEnabled, isCurrentlyMinimized]);
+  }, [ttsEnabled, isCurrentlyMinimized, animationController]);
   const allMessages = [...systemMessages, ...messages];
   const flowNode = activeFlow ? flow_.currentNode : null;
   const flowNodeActive = !!(flowNode && (flow_.currentInput || flow_.visibleOptions.length > 0));
@@ -18889,6 +19198,7 @@ const AvatarChatbotWidget = ({
   return jsx(
     AniaAvatar,
     {
+      ref: actionControlsRef,
       avatarUrl,
       avatarPassword,
       avatarData,
@@ -18904,8 +19214,8 @@ const AvatarChatbotWidget = ({
       messagesOverride,
       minimizable: true,
       closable: true,
-      idleSpeed: currentIdleSpeed,
-      talkSpeed: currentTalkSpeed,
+      idleSpeed: speedsBelongToAvatar ? currentIdleSpeed : idleSpeed,
+      talkSpeed: speedsBelongToAvatar ? currentTalkSpeed : talkSpeed,
       autoCalculateSpeed,
       fpsClamp,
       preserveQuality,
@@ -18914,7 +19224,7 @@ const AvatarChatbotWidget = ({
       // `!isAvatarLoaded` alone meant that an app whose `/player/aniaplayer.min.js`
       // 404s could never open its chat, because the flag that un-minimises it is
       // set by an avatar that never arrives. The chat does not need the avatar.
-      startMinimized: startMinimized || !isAvatarLoaded && !avatarFailed,
+      startMinimized: isCurrentlyMinimized || !isAvatarLoaded && !avatarFailed,
       // Lip sync passthrough
       lipSyncEnabled,
       lipSyncServerUrl,
@@ -18929,6 +19239,14 @@ const AvatarChatbotWidget = ({
       lipSyncHook: lipSyncEnabled ? lipSync : null,
       // Action frames passthrough
       actions,
+      availableActions: hostAvailableActions,
+      ambientActions,
+      ambientActionMinSeconds,
+      ambientActionMaxSeconds,
+      ambientActionIds,
+      talking: isTalking,
+      isListening,
+      isTyping: !!inputMessage.trim() || !!flowInputValue.trim(),
       enableActionHotkeys,
       // Initial action passthrough
       initialAction,

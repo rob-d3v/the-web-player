@@ -189,12 +189,19 @@ const AvatarChatbotWidget = ({
   lipSyncConfigId = null,
   lipSyncMaxCandidates = 5,
   onLipSyncConfig = null,
-  lipSyncIntensity = 0.6,
-  lipSyncResponsiveness = 0.5,
+  // Sem override do host, o AniaAvatar resolve o tuning gravado no arquivo.
+  lipSyncIntensity = undefined,
+  lipSyncResponsiveness = undefined,
   lipSyncSustainStyle = null,
   lipSyncWiggleSpeed = null,
   // Action frame props
   actions = null,
+  availableActions: hostAvailableActions = null,
+  ambientActions = true,
+  ambientActionMinSeconds = 40,
+  ambientActionMaxSeconds = 90,
+  ambientActionIds = null,
+  greetingAction = 'auto',
   enableActionHotkeys = true,
   // Initial action props
   initialAction = null,
@@ -307,10 +314,22 @@ const AvatarChatbotWidget = ({
 
   const [inputMessage, setInputMessage] = useState("");
   const [avatarRef, setAvatarRef] = useState(null);
+  const actionControlsRef = useRef(null);
   const [systemMessages, setSystemMessages] = useState([]);
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [currentIdleSpeed, setCurrentIdleSpeed] = useState(idleSpeed);
   const [currentTalkSpeed, setCurrentTalkSpeed] = useState(talkSpeed);
+  const speedSourceRef = useRef({ avatarUrl, avatarPassword, avatarData });
+  const speedsBelongToAvatar = speedSourceRef.current.avatarUrl === avatarUrl
+    && speedSourceRef.current.avatarPassword === avatarPassword
+    && speedSourceRef.current.avatarData === avatarData;
+  // O primeiro render da troca já deve ignorar o slider do avatar anterior,
+  // antes que os efeitos rodem e que o AniaAvatar capture os novos padrões.
+  useEffect(() => {
+    speedSourceRef.current = { avatarUrl, avatarPassword, avatarData };
+    setCurrentIdleSpeed(idleSpeed);
+    setCurrentTalkSpeed(talkSpeed);
+  }, [avatarUrl, avatarPassword, avatarData]);
   // Keep the effective speed in sync when the HOST changes the idleSpeed/talkSpeed
   // props at runtime (e.g. a live tuner). Without this, currentIdleSpeed was only
   // seeded once at mount and later prop changes never reached the avatar. The
@@ -326,6 +345,11 @@ const AvatarChatbotWidget = ({
   // this is terminal, and the chat has to stop waiting for a face that is never
   // coming. Two apps in the fleet ship no `aniaplayer.min.js` at all.
   const [avatarFailed, setAvatarFailed] = useState(false);
+  useEffect(() => {
+    setIsAvatarLoaded(false);
+    setAvatarRef(null);
+    setAvatarFailed(false);
+  }, [avatarUrl, avatarPassword, avatarData, authToken]);
   const [isCurrentlyMinimized, setIsCurrentlyMinimized] = useState(startMinimized);
   const [attachments, setAttachments] = useState([]);
   // Typed value for the current flow INPUT node (free-text lead capture).
@@ -474,9 +498,20 @@ const AvatarChatbotWidget = ({
 
   // Action frames state
   const animationController = avatarRef?.playerRef?.current?.animationController || null;
+  // Catálogo efetivamente configurado no runtime, incluindo ações do .ania.
+  // Props do host restringem esse catálogo, sem reconfigurar o arquivo.
+  const configuredActions = useMemo(() => {
+    const configured = animationController?.getActions?.()
+      || Object.values(animationController?.getActionConfigs?.() || {});
+    return configured.filter((action) => actions == null
+      || actions.some((allowed) => String(allowed.id) === String(action.id)))
+      .filter((action) => hostAvailableActions == null
+        || hostAvailableActions.some((allowed) => String(allowed.id) === String(action.id)));
+  }, [animationController, actions, hostAvailableActions]);
   const { activeAction, availableActions, triggerAction: triggerActionFrame, cancelAction: cancelActionFrame } = useActionFrames({
-    actions: actions || EMPTY_ACTIONS,
+    actions: configuredActions.length ? configuredActions : EMPTY_ACTIONS,
     enabled: isAvatarLoaded,
+    configureActions: false,
     enableHotkeys: enableActionHotkeys,
     animationController,
     onActionStart: undefined,
@@ -683,7 +718,8 @@ const AvatarChatbotWidget = ({
     // Localize the friendly fallback copy (chat.error.generic) shown on failure.
     translate: tr.t,
     onActionTriggered: (actionId) => {
-      if (triggerActionFrame) triggerActionFrame(actionId);
+      // Uma resposta traz um único id; a política aplica escuta + cooldown de 20 s.
+      actionControlsRef.current?.triggerResponseAction(actionId, triggerActionFrame);
     },
     onResponse: (botMessage) => {
       if (enableTTS && ttsEnabled && botMessage.content) {
@@ -926,11 +962,34 @@ const AvatarChatbotWidget = ({
     };
   }, [autoGreeting, isAvatarLoaded, activeFlow]);
 
+  // Uma tentativa por abertura, inclusive wake/command. Não repete com rerenders
+  // de TTS ou de ações, e a troca de controller começa uma nova abertura.
+  const greetingOpeningRef = useRef(null);
+  const playOpeningGreetingAction = useCallback(() => {
+    if (!animationController || greetingOpeningRef.current === animationController) return;
+    greetingOpeningRef.current = animationController;
+    actionControlsRef.current?.triggerGreetingAction(greetingAction);
+  }, [animationController, greetingAction]);
+  useEffect(() => {
+    if (isCurrentlyMinimized) {
+      greetingOpeningRef.current = null;
+      return;
+    }
+    if (!autoGreeting || !isAvatarLoaded || !animationController
+      || greetingOpeningRef.current === animationController) return;
+    // Quando há saudação falada pendente, o gesto parte no mesmo callback do TTS.
+    if (ttsEnabled && greetingPendingRef.current && !activeFlow) return;
+    const timer = setTimeout(playOpeningGreetingAction, enableTTS && !ttsEnabled ? 1500 : 500);
+    return () => clearTimeout(timer);
+  }, [autoGreeting, isAvatarLoaded, isCurrentlyMinimized, animationController,
+    playOpeningGreetingAction, enableTTS, ttsEnabled, activeFlow]);
+
   useEffect(() => {
     if (ttsEnabled && greetingPendingRef.current && speakRef.current && !isCurrentlyMinimized) {
       const greetingText = greetingPendingRef.current;
       greetingPendingRef.current = null;
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        if (autoGreeting) playOpeningGreetingAction();
         speakRef.current(greetingText, {
           lang: ttsLang,
           rate: ttsRate,
@@ -939,8 +998,9 @@ const AvatarChatbotWidget = ({
           cancelPrevious: true
         });
       }, 500);
+      return () => clearTimeout(timer);
     }
-  }, [ttsEnabled, isCurrentlyMinimized]);
+  }, [ttsEnabled, isCurrentlyMinimized, animationController]);
 
   const allMessages = [...systemMessages, ...messages];
 
@@ -1498,6 +1558,7 @@ const AvatarChatbotWidget = ({
   return jsx(
     AniaAvatar,
     {
+      ref: actionControlsRef,
       avatarUrl,
       avatarPassword,
       avatarData,
@@ -1513,8 +1574,8 @@ const AvatarChatbotWidget = ({
       messagesOverride,
       minimizable: true,
       closable: true,
-      idleSpeed: currentIdleSpeed,
-      talkSpeed: currentTalkSpeed,
+      idleSpeed: speedsBelongToAvatar ? currentIdleSpeed : idleSpeed,
+      talkSpeed: speedsBelongToAvatar ? currentTalkSpeed : talkSpeed,
       autoCalculateSpeed,
       fpsClamp,
       preserveQuality,
@@ -1523,7 +1584,7 @@ const AvatarChatbotWidget = ({
       // `!isAvatarLoaded` alone meant that an app whose `/player/aniaplayer.min.js`
       // 404s could never open its chat, because the flag that un-minimises it is
       // set by an avatar that never arrives. The chat does not need the avatar.
-      startMinimized: startMinimized || (!isAvatarLoaded && !avatarFailed),
+      startMinimized: isCurrentlyMinimized || (!isAvatarLoaded && !avatarFailed),
       // Lip sync passthrough
       lipSyncEnabled,
       lipSyncServerUrl,
@@ -1538,6 +1599,14 @@ const AvatarChatbotWidget = ({
       lipSyncHook: lipSyncEnabled ? lipSync : null,
       // Action frames passthrough
       actions,
+      availableActions: hostAvailableActions,
+      ambientActions,
+      ambientActionMinSeconds,
+      ambientActionMaxSeconds,
+      ambientActionIds,
+      talking: isTalking,
+      isListening,
+      isTyping: !!inputMessage.trim() || !!flowInputValue.trim(),
       enableActionHotkeys,
       // Initial action passthrough
       initialAction,

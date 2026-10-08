@@ -2,6 +2,36 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## [1.18.0] - 2026-10-07
+
+### Added — occasional authored gestures and a greeting action
+- AniaAvatar and AvatarChatbot now select ambient actions from the runtime's
+  configured `.ania` catalog while idle, visible and on screen. New props:
+  `ambientActions` (true), `ambientActionMinSeconds` (40),
+  `ambientActionMaxSeconds` (90), and optional `ambientActionIds`.
+- One random timeout, no interval or frame polling. Hidden tabs, speech,
+  active actions, typing/listening and reduced motion suspend scheduling;
+  cleanup cancels it on avatar changes/unmount. Consecutive picks differ when
+  more than one action is eligible. triggerAction preserves the 2.1.0 governor.
+- AvatarChatbot's `greetingAction` defaults to `auto`: normalized name/ID
+  GREETING, SAUDACAO/SAUDAÇÃO, WAVE or ACENO, once per chat opening/wake.
+  `false` disables it; a string forces a configured ID. The pending spoken
+  greeting triggers the gesture in the same callback. Blocked greetings skip
+  that opening, and autoGreeting=false disables the gesture too.
+
+### Changed
+- AvatarChatbot uses the configured file action catalog for response/command/
+  hotkey selection, without replacing it with host props. `actions` and the
+  new `availableActions` prop restrict that catalog by ID when supplied.
+- Response gestures respect listening/active actions and a shared minimum
+  20-second cooldown with ambient and other action starts; explicit manual
+  triggers remain available. Standalone hosts can supply `talking`, `isTyping`
+  and `isListening`. No new action audio is started by automatic gestures.
+- Wake/command openings now forward the chatbot's current minimized state to
+  AniaAvatar, including widgets originally mounted with startMinimized=true.
+- New focused Node test `examples/test-ambient-actions.mjs` (`npm run test:ambient`),
+  matching the package's dependency-free harness convention. No publication.
+
 ## [1.17.0] - 2026-10-07
 
 ### Changed — the avatar stops paying for frames nobody sees (runtime ext 2.1.0-governor)
