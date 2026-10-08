@@ -2,6 +2,11 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## 1.18.1 — 2026-10-08
+
+- **Volta o comportamento original do avatar parado.** Sai o "render governor" da 1.17.0 (runtime `2.1.0-governor` e a pausa do `AniaAvatar`): o avatar não pausa mais quando acha que está fora da tela, minimizado ou ocioso, não reduz o idle para ~14 qps e não espera a página ficar ociosa para carregar o `.ania`. Pedido do Robson: o avatar ficava estático esperando um clique. Runtime volta ao `2.0.x`.
+- Mantidos da 1.18.0: gestos ambientes, saudação ao abrir e padrões autorais de lip sync.
+
 ## [1.18.0] - 2026-10-07
 
 ### Added — occasional authored gestures and a greeting action

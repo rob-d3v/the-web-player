@@ -12839,78 +12839,6 @@ const warnDeprecated = (key, message) => {
   warnedOnce.add(key);
   console.warn(`[AniaAvatar] ${message}`);
 };
-const FRAME_CACHE_SIZE = 40;
-const PAUSE_GRACE_MS = 1200;
-const MAX_CANVAS_DPR = 2;
-const ANIA_IDLE_TIMEOUT_MS = 1500;
-const isAniaDebug = () => {
-  if (typeof window === "undefined") return false;
-  if (window.__ANIA_DEBUG__) return true;
-  try {
-    return window.localStorage.getItem("ania:debug") === "1";
-  } catch (e) {
-    return false;
-  }
-};
-const debugLog = (...args) => {
-  if (isAniaDebug()) console.log(...args);
-};
-const waitForIdle = (timeoutMs) => new Promise((resolve) => {
-  if (typeof window === "undefined") return resolve();
-  if (typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(() => resolve(), { timeout: timeoutMs });
-  } else {
-    setTimeout(resolve, Math.min(timeoutMs, 300));
-  }
-});
-const isControllerActive = (ctrl) => !!ctrl && (!!ctrl.isTalking || typeof ctrl.isActionPlaying === "function" && ctrl.isActionPlaying());
-const sizeCanvasToDisplay = (player, natW, natH) => {
-  const canvas = player && player.canvas;
-  if (!canvas || !(natW > 0) || !(natH > 0)) return;
-  const cssW = canvas.clientWidth;
-  const cssH = canvas.clientHeight;
-  if (!cssW || !cssH) return;
-  const dpr = Math.min(MAX_CANVAS_DPR, Math.max(1, window.devicePixelRatio || 1));
-  const scale = Math.min(1, Math.max(cssW / natW, cssH / natH) * dpr);
-  const w = Math.max(1, Math.round(natW * scale));
-  const h = Math.max(1, Math.round(natH * scale));
-  if (canvas.width === w && canvas.height === h) return;
-  canvas.width = w;
-  canvas.height = h;
-  if (player.ctx) {
-    player.ctx.imageSmoothingEnabled = true;
-    player.ctx.imageSmoothingQuality = "high";
-  }
-  if (player.fileData && typeof player.renderFrame === "function") {
-    player.renderFrame(player.currentFrame || 0);
-  }
-};
-const attachRenderHooks = (player, onActivity) => {
-  if (player.constructor && player.constructor.governed) {
-    player.onActivity = onActivity;
-    return;
-  }
-  if (player.frameCache && typeof player.frameCache.setMaxSize === "function") {
-    player.frameCache.setMaxSize(FRAME_CACHE_SIZE);
-  }
-  const ctrl = player.animationController;
-  if (ctrl && typeof ctrl.setTalkingState === "function") {
-    const baseSetTalking = ctrl.setTalkingState;
-    ctrl.setTalkingState = function(talking) {
-      const r = baseSetTalking.call(this, talking);
-      onActivity();
-      return r;
-    };
-  }
-  if (ctrl && typeof ctrl.triggerAction === "function") {
-    const baseTrigger = ctrl.triggerAction;
-    ctrl.triggerAction = function(actionId) {
-      const r = baseTrigger.call(this, actionId);
-      onActivity();
-      return r;
-    };
-  }
-};
 const AniaAvatarPlayer = forwardRef(({
   avatarUrl,
   avatarPassword,
@@ -13076,43 +13004,6 @@ const AniaAvatarPlayer = forwardRef(({
   const positionStartRef = useRef({ x: 0, y: 0 });
   const outerContainerRef = useRef(null);
   const hasDraggedRef = useRef(false);
-  const isMinimizedRef = useRef(startMinimized);
-  const offscreenRef = useRef(false);
-  const pauseTimerRef = useRef(null);
-  const nativeSizeRef = useRef(null);
-  const syncRenderLoop = useCallback(() => {
-    const player = playerRef.current;
-    if (!player || !player.animationController || typeof player.play !== "function") return;
-    const shouldRun = () => {
-      const p = playerRef.current;
-      if (!p) return false;
-      if (typeof document !== "undefined" && document.hidden) return false;
-      if (offscreenRef.current) return false;
-      return !isMinimizedRef.current || isControllerActive(p.animationController);
-    };
-    if (shouldRun()) {
-      if (pauseTimerRef.current) {
-        clearTimeout(pauseTimerRef.current);
-        pauseTimerRef.current = null;
-      }
-      try {
-        if (!player.isPlaying) player.play();
-        else if (typeof player.wake === "function") player.wake();
-      } catch (err) {
-        console.error("[AniaAvatar] Error reactivating:", err);
-      }
-      return;
-    }
-    if (!player.isPlaying || pauseTimerRef.current) return;
-    const doPause = () => {
-      pauseTimerRef.current = null;
-      if (playerRef.current !== player || !player.isPlaying || shouldRun()) return;
-      player.pause();
-    };
-    if (typeof document !== "undefined" && document.hidden) doPause();
-    else pauseTimerRef.current = setTimeout(doPause, PAUSE_GRACE_MS);
-  }, []);
-  const isAmbientVisible = useCallback(() => !offscreenRef.current, []);
   const ambientControls = useAmbientActions(isLoaded ? (_a = playerRef.current) == null ? void 0 : _a.animationController : null, {
     ambientActions,
     ambientActionMinSeconds,
@@ -13121,11 +13012,9 @@ const AniaAvatarPlayer = forwardRef(({
     actions,
     availableActions,
     visible: isVisible,
-    isVisible: isAmbientVisible,
     isTalking: isTalking || talking,
     isListening,
-    isTyping,
-    onActivity: syncRenderLoop
+    isTyping
   }, [avatarUrl, avatarPassword, externalAvatarData, authToken]);
   useImperativeHandle(ref, () => ({
     playerRef,
@@ -13294,63 +13183,42 @@ const AniaAvatarPlayer = forwardRef(({
   }, [isTalking]);
   useEffect(() => {
     const handleVisibilityChange = () => {
-      syncRenderLoop();
-      if (!document.hidden && detectAudio && playerRef.current && playerRef.current.animationController) {
-        playerRef.current.animationController.setTalkingState(isTalking);
+      if (!document.hidden && playerRef.current) {
+        if (playerRef.current.play && typeof playerRef.current.play === "function") {
+          try {
+            playerRef.current.play();
+          } catch (err) {
+            console.error("[AniaAvatar] Error reactivating:", err);
+          }
+        }
+        if (detectAudio && playerRef.current.animationController) {
+          playerRef.current.animationController.setTalkingState(isTalking);
+        }
       }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     const keepaliveInterval = setInterval(() => {
-      if (isLoaded) syncRenderLoop();
+      if (!document.hidden && playerRef.current && isLoaded) {
+        if (playerRef.current.play && typeof playerRef.current.play === "function") {
+          try {
+            const canvas = playerRef.current.canvas;
+            if (canvas && canvas.getContext) {
+              const ctx = canvas.getContext("2d");
+              if (ctx && playerRef.current.animationController) {
+                playerRef.current.play();
+              }
+            }
+          } catch (err) {
+            console.warn("[AniaAvatar] Keepalive failed:", err);
+          }
+        }
+      }
     }, 3e4);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       clearInterval(keepaliveInterval);
     };
-  }, [isTalking, isLoaded, detectAudio, syncRenderLoop]);
-  useEffect(() => {
-    isMinimizedRef.current = isMinimized;
-    syncRenderLoop();
-  }, [isMinimized, isLoaded, syncRenderLoop]);
-  useEffect(() => {
-    if (!isLoaded || !containerRef.current || typeof IntersectionObserver === "undefined") return;
-    const io = new IntersectionObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      offscreenRef.current = !!entry && !entry.isIntersecting;
-      ambientControls.refresh();
-      syncRenderLoop();
-    });
-    io.observe(containerRef.current);
-    return () => {
-      io.disconnect();
-      offscreenRef.current = false;
-    };
-  }, [isLoaded, syncRenderLoop, ambientControls.refresh]);
-  useEffect(() => {
-    const player = playerRef.current;
-    if (!isLoaded || !player || !player.canvas) return;
-    const resize = () => {
-      const size = nativeSizeRef.current;
-      if (size && playerRef.current) sizeCanvasToDisplay(playerRef.current, size.w, size.h);
-    };
-    resize();
-    let ro2 = null;
-    if (typeof ResizeObserver !== "undefined") {
-      ro2 = new ResizeObserver(resize);
-      ro2.observe(player.canvas);
-    }
-    window.addEventListener("resize", resize);
-    return () => {
-      if (ro2) ro2.disconnect();
-      window.removeEventListener("resize", resize);
-    };
-  }, [isLoaded]);
-  useEffect(() => () => {
-    if (pauseTimerRef.current) {
-      clearTimeout(pauseTimerRef.current);
-      pauseTimerRef.current = null;
-    }
-  }, []);
+  }, [isTalking, isLoaded, detectAudio]);
   useEffect(() => {
     let cancelled = false;
     let checkInterval = null;
@@ -13358,11 +13226,10 @@ const AniaAvatarPlayer = forwardRef(({
     setIsLoaded(false);
     setError(null);
     playbackBasisRef.current = null;
-    nativeSizeRef.current = null;
     const loadAvatar = async () => {
-      debugLog("[AniaAvatar] loadAvatar called", { isLoading: isLoadingRef.current, hasAniaPlayer: !!window.AniaPlayer, hasContainer: !!containerRef.current, hasPlayer: !!playerRef.current });
+      console.log("[AniaAvatar] loadAvatar called", { isLoading: isLoadingRef.current, hasAniaPlayer: !!window.AniaPlayer, hasContainer: !!containerRef.current, hasPlayer: !!playerRef.current });
       if (isLoadingRef.current) {
-        debugLog("[AniaAvatar] Already loading, skipping");
+        console.log("[AniaAvatar] Already loading, skipping");
         return;
       }
       if (!window.AniaPlayer) {
@@ -13376,15 +13243,13 @@ const AniaAvatarPlayer = forwardRef(({
         return;
       }
       if (playerRef.current) {
-        debugLog("[AniaAvatar] Player already exists, skipping");
+        console.log("[AniaAvatar] Player already exists, skipping");
         return;
       }
       isLoadingRef.current = true;
       performance.now();
       try {
         let avatarData;
-        await waitForIdle(ANIA_IDLE_TIMEOUT_MS);
-        if (cancelled) return;
         if (avatarUrl) {
           const fetchStart = performance.now();
           const cachedData = await getCachedAvatar(avatarUrl);
@@ -13487,7 +13352,7 @@ const AniaAvatarPlayer = forwardRef(({
           speed: talkReq.speed,
           clamp: clampCfg
         });
-        debugLog(
+        console.log(
           `[AniaAvatar] fps ${nativeFps.toFixed(2)} (${fpsSource}) → idle ${(1e3 / idleIntervalMs).toFixed(1)}fps / talk ${(1e3 / talkIntervalMs).toFixed(1)}fps` + (clampCfg ? ` [clamped ${clampCfg.min}-${clampCfg.max}]` : " [unclamped]")
         );
         if (clampCfg) {
@@ -13533,7 +13398,7 @@ const AniaAvatarPlayer = forwardRef(({
           isLoadingRef.current = false;
           return;
         }
-        debugLog("[AniaAvatar] Creating player with container:", containerRef.current, "size:", canvasWidth, "x", canvasHeight);
+        console.log("[AniaAvatar] Creating player with container:", containerRef.current, "size:", canvasWidth, "x", canvasHeight);
         const player = new PlayerClass(containerRef.current, {
           transparent: true,
           chroma_enabled: false,
@@ -13647,7 +13512,7 @@ const AniaAvatarPlayer = forwardRef(({
               if (cancelled || playerRef.current !== player) return;
               applyLipSync(best ? best.config : null);
               if (best) {
-                debugLog(
+                console.log(
                   `[AniaAvatar] Lip sync config from server: "${best.configName || best.configId || "default"}" (score ${best.score == null ? "n/a" : best.score.toFixed(1)} de ${best.candidates} candidata(s))`
                 );
                 if (onLipSyncConfig) {
@@ -13689,16 +13554,11 @@ const AniaAvatarPlayer = forwardRef(({
           ctrl.getSpectralOpennessFn = lipSyncHook.getSpectralOpenness;
           ctrl.getSpectralFluxFn = lipSyncHook.getSpectralFlux;
         }
-        nativeSizeRef.current = { w: canvasWidth, h: canvasHeight };
-        attachRenderHooks(player, () => {
-          if (playerRef.current === player) syncRenderLoop();
-        });
-        sizeCanvasToDisplay(player, canvasWidth, canvasHeight);
         player.play();
         playerRef.current = player;
         setIsLoaded(true);
         isLoadingRef.current = false;
-        debugLog("[AniaAvatar] Avatar loaded successfully!");
+        console.log("[AniaAvatar] Avatar loaded successfully!");
         if (onLoad) {
           onLoad(player);
         }
@@ -13726,15 +13586,15 @@ const AniaAvatarPlayer = forwardRef(({
         isLoadingRef.current = false;
       }
     };
-    debugLog("[AniaAvatar] useEffect running, window.AniaPlayer:", !!window.AniaPlayer);
+    console.log("[AniaAvatar] useEffect running, window.AniaPlayer:", !!window.AniaPlayer);
     if (window.AniaPlayer) {
       loadAvatar();
     } else {
-      debugLog("[AniaAvatar] Waiting for AniaPlayer script...");
+      console.log("[AniaAvatar] Waiting for AniaPlayer script...");
       const waitStartedAt = Date.now();
       checkInterval = setInterval(() => {
         if (window.AniaPlayer) {
-          debugLog("[AniaAvatar] AniaPlayer found after wait!");
+          console.log("[AniaAvatar] AniaPlayer found after wait!");
           clearInterval(checkInterval);
           loadAvatar();
           return;
@@ -13754,10 +13614,6 @@ const AniaAvatarPlayer = forwardRef(({
       cancelled = true;
       if (checkInterval) clearInterval(checkInterval);
       if (initialActionTimer) clearTimeout(initialActionTimer);
-      if (pauseTimerRef.current) {
-        clearTimeout(pauseTimerRef.current);
-        pauseTimerRef.current = null;
-      }
       if (playerRef.current) {
         try {
           if (playerRef.current.stop) {

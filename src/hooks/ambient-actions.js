@@ -65,7 +65,7 @@ export function createAmbientActions(controller, initialOptions = {}) {
   };
 
   // Encadeia os métodos, sem ocupar os callbacks usados por atalhos/initialAction.
-  // triggerAction continua passando pelo _onActivity do governor do runtime.
+  // triggerAction segue direto para o controller do runtime.
   const wrap = (name, after) => {
     const original = controller[name];
     if (typeof original !== 'function') return;
