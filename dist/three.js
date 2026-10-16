@@ -131,9 +131,9 @@ function imageSize(bytes, mime) {
 }
 const TIERS = Object.freeze(["full", "light", "2d"]);
 const TIER_SETTINGS = Object.freeze({
-  full: { pixelRatioMax: 1.5, fps: 30, textureMax: 2048, antialias: true },
-  light: { pixelRatioMax: 1, fps: 24, textureMax: 512, antialias: false },
-  "2d": { pixelRatioMax: 1, fps: 24, textureMax: 512, antialias: false }
+  full: Object.freeze({ pixelRatioMax: 1.5, fps: 30, textureMax: 2048, antialias: true, outlines: true, maxPixels: 24e5 }),
+  light: Object.freeze({ pixelRatioMax: 1, fps: 24, textureMax: 1024, antialias: false, outlines: false, maxPixels: 3e5 }),
+  "2d": Object.freeze({ pixelRatioMax: 1, fps: 24, textureMax: 1024, antialias: false, outlines: false, maxPixels: 3e5 })
 });
 const num = (v) => v === null || v === void 0 || v === "" ? null : Number.isFinite(Number(v)) ? Number(v) : null;
 function chooseTier(m = {}) {
@@ -141,8 +141,10 @@ function chooseTier(m = {}) {
   const fps = num(m.fps), loadMs = num(m.loadMs), mem = num(m.memoryGB), cores = num(m.cores);
   if (m.webgl === false) return { tier: "2d", reasons: ["Este aparelho não tem WebGL."], camera: { allowed: false, reason: "A câmera precisa do 3D, que não roda aqui." } };
   if (m.softwareRenderer) reasons.push("Sem aceleração de vídeo (renderização por software).");
+  else if (m.caveat) reasons.push("O navegador avisa que o vídeo deste computador é lento para 3D.");
   let score = 2;
   if (m.softwareRenderer) score = Math.min(score, 0);
+  if (m.caveat) score = Math.min(score, 1);
   if (fps !== null) {
     if (fps < 12) {
       score = Math.min(score, 0);
@@ -193,19 +195,46 @@ const saveTier = (storage, tier) => {
 function tierLabel(tier) {
   return { full: "3D completo", light: "3D leve", "2d": "2D" }[tier] || "3D completo";
 }
+const SOFTWARE = /swiftshader|llvmpipe|software|softpipe|microsoft basic render/i;
+function probeGPU({ document: doc = globalThis.document, nav = globalThis.navigator } = {}) {
+  var _a, _b;
+  const out = { webgl: false, webgl2: false, softwareRenderer: false, caveat: false, renderer: "", vendor: "", maxTextureSize: null, memoryGB: (nav == null ? void 0 : nav.deviceMemory) ?? null, cores: (nav == null ? void 0 : nav.hardwareConcurrency) ?? null };
+  try {
+    const canvas = doc.createElement("canvas");
+    canvas.width = 8;
+    canvas.height = 8;
+    const gl2 = canvas.getContext("webgl2");
+    const gl = gl2 || canvas.getContext("webgl");
+    if (!gl) return out;
+    out.webgl = true;
+    out.webgl2 = !!gl2;
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    out.renderer = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) || "");
+    out.vendor = String(ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR) || "");
+    out.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) || null;
+    out.softwareRenderer = SOFTWARE.test(out.renderer);
+    (_a = gl.getExtension("WEBGL_lose_context")) == null ? void 0 : _a.loseContext();
+    const strict = doc.createElement("canvas");
+    strict.width = 8;
+    strict.height = 8;
+    const fast = strict.getContext(gl2 ? "webgl2" : "webgl", { failIfMajorPerformanceCaveat: true });
+    out.caveat = !fast;
+    (_b = fast == null ? void 0 : fast.getExtension("WEBGL_lose_context")) == null ? void 0 : _b.loseContext();
+  } catch {
+  }
+  return out;
+}
 async function runQuickBench({ durationMs = 1500, document: doc = globalThis.document, nav = globalThis.navigator, perf = globalThis.performance, raf = globalThis.requestAnimationFrame } = {}) {
   var _a;
-  const out = { webgl: false, softwareRenderer: false, fps: null, memoryGB: (nav == null ? void 0 : nav.deviceMemory) ?? null, cores: (nav == null ? void 0 : nav.hardwareConcurrency) ?? null, jsHeapMB: null, renderer: "" };
+  const probe = probeGPU({ document: doc, nav });
+  const out = { ...probe, fps: null, jsHeapMB: null };
+  if (!probe.webgl) return out;
   try {
     const canvas = doc.createElement("canvas");
     canvas.width = 512;
     canvas.height = 512;
     const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
     if (!gl) return out;
-    out.webgl = true;
-    const ext = gl.getExtension("WEBGL_debug_renderer_info");
-    out.renderer = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : "";
-    out.softwareRenderer = /swiftshader|llvmpipe|software|softpipe|microsoft basic render/i.test(out.renderer);
     const vs = gl.createShader(gl.VERTEX_SHADER);
     gl.shaderSource(vs, "attribute vec2 p; varying vec2 v; void main(){ v=p; gl_Position=vec4(p,0.,1.); }");
     gl.compileShader(vs);
@@ -253,15 +282,33 @@ async function runQuickBench({ durationMs = 1500, document: doc = globalThis.doc
   }
   return out;
 }
+async function assessDevice(options = {}) {
+  const probe = probeGPU(options);
+  if (!probe.webgl || probe.softwareRenderer) return { measurements: { ...probe, fps: null, jsHeapMB: null }, choice: chooseTier(probe) };
+  const measurements = await runQuickBench(options);
+  return { measurements, choice: chooseTier(measurements) };
+}
 const bounded = (v) => Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
-function createAvatar3DViewer(container) {
+const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+function createAvatar3DViewer(container, options = {}) {
+  let tier = options.quality === "light" ? "light" : "full";
   let renderer;
   try {
-    renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: "low-power" });
+    renderer = new THREE.WebGLRenderer({ alpha: true, antialias: tier === "full", powerPreference: tier === "full" ? "default" : "low-power", failIfMajorPerformanceCaveat: false });
   } catch {
     throw new Error("O navegador não conseguiu iniciar o 3D. Ative a aceleração gráfica ou tente outro navegador.");
   }
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+  let lost = false;
+  renderer.domElement.addEventListener("webglcontextlost", (event) => {
+    var _a;
+    event.preventDefault();
+    lost = true;
+    cancelAnimationFrame(raf);
+    try {
+      (_a = options.onContextLost) == null ? void 0 : _a.call(options);
+    } catch {
+    }
+  });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.setClearColor(0, 0);
   renderer.domElement.setAttribute("aria-label", "Visualizador de avatar 3D");
@@ -286,13 +333,17 @@ function createAvatar3DViewer(container) {
   let poses = { full: null, bust: null }, framing = "full", morphRefs = null;
   const tmpV = new THREE.Vector3();
   let tracking = null, visemes = null, arms = null, trunk = null, mouthAssist = 0;
-  let frameMs = 1e3 / 30, textureMax = 2048;
-  function setQuality(tier) {
-    const light2 = tier === "light" || tier === "2d";
-    frameMs = light2 ? 1e3 / 24 : 1e3 / 30;
-    textureMax = light2 ? 512 : 2048;
-    renderer.setPixelRatio(light2 ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+  let settings = TIER_SETTINGS[tier];
+  let frameMs = 1e3 / settings.fps;
+  function setQuality(next) {
+    const was = tier;
+    tier = next === "light" || next === "2d" ? "light" : "full";
+    settings = TIER_SETTINGS[tier];
+    frameMs = 1e3 / settings.fps;
     resize();
+    if (model && tier === "light" && was !== "light") void slim(model);
+    slowSince = 0;
+    fpsWindow.length = 0;
   }
   async function shrinkTextures(root, max) {
     let reduced = 0;
@@ -303,29 +354,59 @@ function createAvatar3DViewer(container) {
     for (const tex of seen) {
       const img = tex.image, w = img.width || img.videoWidth || 0, h = img.height || img.videoHeight || 0;
       if (!w || !h || Math.max(w, h) <= max) continue;
-      const k = max / Math.max(w, h), c2 = document.createElement("canvas");
-      c2.width = Math.max(1, Math.round(w * k));
-      c2.height = Math.max(1, Math.round(h * k));
-      c2.getContext("2d").drawImage(img, 0, 0, c2.width, c2.height);
+      const k = max / Math.max(w, h), cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
+      let next = null;
+      try {
+        if (typeof createImageBitmap === "function") next = await createImageBitmap(img, { resizeWidth: cw, resizeHeight: ch, resizeQuality: "medium", imageOrientation: "none", premultiplyAlpha: "none", colorSpaceConversion: "none" });
+      } catch {
+        next = null;
+      }
+      if (!next) {
+        const c2 = document.createElement("canvas");
+        c2.width = cw;
+        c2.height = ch;
+        c2.getContext("2d").drawImage(img, 0, 0, cw, ch);
+        next = c2;
+      }
       if (img.close) try {
         img.close();
       } catch {
       }
-      tex.image = c2;
+      tex.image = next;
       tex.needsUpdate = true;
       reduced++;
+      await nextTask();
     }
     return reduced;
+  }
+  function setOutlines(root, visible) {
+    root.traverse((o) => {
+      for (const m of [].concat(o.material || [])) if ((m == null ? void 0 : m.isOutline) !== void 0 && m.isOutline) m.visible = visible;
+    });
+  }
+  async function slim(root) {
+    setOutlines(root, settings.outlines);
+    try {
+      await shrinkTextures(root, settings.textureMax);
+    } catch {
+    }
   }
   const resize = () => {
     if (disposed) return;
     const width = Math.max(container.clientWidth, 1), height = Math.max(container.clientHeight, 1);
+    const dpr = window.devicePixelRatio || 1;
+    const ratio = Math.max(0.5, Math.min(dpr, settings.pixelRatioMax, Math.sqrt(settings.maxPixels / (width * height))));
+    renderer.setPixelRatio(ratio);
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
   };
   const observer = new ResizeObserver(resize);
   observer.observe(container);
+  const fpsWindow = [];
+  let slowSince = 0, slowReported = false, measuredFps = 0;
+  let springDt = 0, springTick = 0;
+  let lastDraw = 0;
   resize();
   function resetCamera() {
     if (!cameraPose) {
@@ -364,9 +445,18 @@ function createAvatar3DViewer(container) {
     arms = null;
     trunk = null;
   }
-  async function load(buffer, name) {
+  async function load(buffer, name, loadOptions = {}) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
     if (disposed) throw new Error("O visualizador foi fechado.");
+    if (lost) throw new Error("O 3D parou neste navegador. Recarregue a página para tentar de novo.");
+    const progress = (stage, fraction) => {
+      var _a2;
+      try {
+        (_a2 = loadOptions.onProgress) == null ? void 0 : _a2.call(loadOptions, stage, fraction);
+      } catch {
+      }
+    };
+    progress("parse", 0);
     const ticket = ++generation;
     const inspection = inspectGLB(buffer);
     const manager = new THREE.LoadingManager();
@@ -420,11 +510,53 @@ function createAvatar3DViewer(container) {
     }
     if (framing === "bust" && poses.bust) cameraPose = poses.bust;
     const nextMorphs = resolveMorphs(next);
-    if (textureMax < 2048) {
+    progress("textures", 0);
+    await slim(next);
+    if (disposed || ticket !== generation) {
+      release(next);
+      throw new Error("Carregamento substituído por outro modelo.");
+    }
+    const textures = collectTextures(next);
+    for (let i = 0; i < textures.length; i++) {
       try {
-        await shrinkTextures(next, textureMax);
+        renderer.initTexture(textures[i]);
       } catch {
       }
+      progress("textures", (i + 1) / textures.length);
+      await nextTask();
+      if (disposed || ticket !== generation) {
+        release(next);
+        throw new Error("Carregamento substituído por outro modelo.");
+      }
+    }
+    progress("shaders", 0);
+    try {
+      await renderer.compileAsync(next, camera, scene);
+    } catch {
+    }
+    const programs = /* @__PURE__ */ new Set();
+    next.traverse((o) => {
+      for (const m of [].concat(o.material || [])) {
+        const pr = m && renderer.properties.get(m).currentProgram;
+        if (pr) programs.add(pr);
+      }
+    });
+    let linked = 0;
+    for (const program of programs) {
+      try {
+        program.getUniforms();
+      } catch {
+      }
+      progress("shaders", ++linked / programs.size);
+      await nextTask();
+      if (disposed || ticket !== generation) {
+        release(next);
+        throw new Error("Carregamento substituído por outro modelo.");
+      }
+    }
+    if (disposed || ticket !== generation) {
+      release(next);
+      throw new Error("Carregamento substituído por outro modelo.");
     }
     dropModel();
     model = next;
@@ -435,6 +567,7 @@ function createAvatar3DViewer(container) {
     mixer.addEventListener("finished", () => stopAction());
     scene.add(model);
     resetCamera();
+    progress("ready", 1);
     const expressions = ((_j = (_i = vrm == null ? void 0 : vrm.expressionManager) == null ? void 0 : _i.expressions) == null ? void 0 : _j.map((e2) => e2.expressionName)) || [];
     return {
       name: name || "Avatar 3D",
@@ -464,12 +597,20 @@ function createAvatar3DViewer(container) {
   }
   function frame(now) {
     var _a;
-    if (disposed) return;
+    if (disposed || lost) return;
     raf = requestAnimationFrame(frame);
-    if (document.hidden || now - previous < frameMs) return;
-    const dt = Math.min((now - previous) / 1e3 || 0, 0.1);
-    previous = now;
+    if (document.hidden) {
+      previous = lastDraw = now;
+      return;
+    }
+    if (now - previous < frameMs - 4) return;
+    previous += frameMs;
+    if (now - previous > frameMs) previous = now;
+    const gap = now - lastDraw;
+    lastDraw = now;
+    const dt = Math.min(gap / 1e3 || 0, 0.1);
     elapsed += dt;
+    if (model && gap > 0 && gap < 2e3) watchSpeed(now, gap);
     if ((vrm == null ? void 0 : vrm.humanoid) && !clipAction) {
       vrm.humanoid.resetNormalizedPose();
       const bone = (id) => vrm.humanoid.getNormalizedBoneNode(id);
@@ -543,7 +684,20 @@ function createAvatar3DViewer(container) {
       }
     }
     mixer == null ? void 0 : mixer.update(dt);
-    vrm == null ? void 0 : vrm.update(dt);
+    if (vrm && tier === "light" && vrm.springBoneManager) {
+      const springs = vrm.springBoneManager;
+      springDt += dt;
+      vrm.springBoneManager = void 0;
+      try {
+        vrm.update(dt);
+      } finally {
+        vrm.springBoneManager = springs;
+      }
+      if ((springTick = (springTick + 1) % 2) === 0) {
+        springs.update(springDt);
+        springDt = 0;
+      }
+    } else vrm == null ? void 0 : vrm.update(dt);
     if (morphRefs && (tracking == null ? void 0 : tracking.expressions)) {
       for (const [key, refs] of Object.entries(morphRefs)) {
         const v = bounded(tracking.expressions[key]);
@@ -553,7 +707,54 @@ function createAvatar3DViewer(container) {
     controls.update();
     renderer.render(scene, camera);
   }
+  function watchSpeed(now, gap) {
+    var _a, _b;
+    fpsWindow.push([now, gap]);
+    while (fpsWindow.length && now - fpsWindow[0][0] > 3e3) fpsWindow.shift();
+    if (fpsWindow.length < 8) return;
+    const span = fpsWindow.reduce((s, [, g]) => s + g, 0);
+    measuredFps = Math.round(fpsWindow.length / (span / 1e3) * 10) / 10;
+    const floor = tier === "full" ? settings.fps * 0.6 : 10;
+    if (measuredFps >= floor) {
+      slowSince = 0;
+      return;
+    }
+    if (!slowSince) {
+      slowSince = now;
+      return;
+    }
+    if (now - slowSince < 4e3) return;
+    slowSince = 0;
+    if (tier === "full") {
+      setQuality("light");
+      try {
+        (_a = options.onSlow) == null ? void 0 : _a.call(options, { from: "full", to: "light", fps: measuredFps });
+      } catch {
+      }
+    } else if (!slowReported) {
+      slowReported = true;
+      try {
+        (_b = options.onSlow) == null ? void 0 : _b.call(options, { from: "light", to: "2d", fps: measuredFps });
+      } catch {
+      }
+    }
+  }
   raf = requestAnimationFrame(frame);
+  function getStats() {
+    var _a, _b;
+    const gl = renderer.getContext();
+    return {
+      tier,
+      fps: measuredFps,
+      pixelRatio: renderer.getPixelRatio(),
+      antialias: !!((_b = (_a = gl.getContextAttributes) == null ? void 0 : _a.call(gl)) == null ? void 0 : _b.antialias),
+      textures: renderer.info.memory.textures,
+      geometries: renderer.info.memory.geometries,
+      drawCalls: renderer.info.render.calls,
+      triangles: renderer.info.render.triangles,
+      lost
+    };
+  }
   function dispose() {
     if (disposed) return;
     disposed = true;
@@ -563,7 +764,10 @@ function createAvatar3DViewer(container) {
     controls.dispose();
     dropModel();
     renderer.dispose();
-    renderer.forceContextLoss();
+    try {
+      renderer.forceContextLoss();
+    } catch {
+    }
     renderer.domElement.remove();
   }
   const finiteOr0 = (v) => Number.isFinite(v) ? v : 0;
@@ -614,7 +818,7 @@ function createAvatar3DViewer(container) {
     speech = bounded(value);
   }, setQuality, setTracking, setArms, setMouthAssist: (value) => {
     mouthAssist = bounded(value);
-  }, setVisemes, setFraming, faceSupport, resetCamera, dispose };
+  }, setVisemes, setFraming, faceSupport, resetCamera, getStats, getQuality: () => tier, dispose };
 }
 const FINGER_BONES = {
   index: [["IndexProximal", 1.4], ["IndexIntermediate", 1.7], ["IndexDistal", 1.1]],
@@ -646,6 +850,18 @@ function resolveMorphs(root) {
   });
   return out;
 }
+function collectTextures(root) {
+  const textures = /* @__PURE__ */ new Set();
+  root.traverse((object) => {
+    var _a;
+    for (const material of [].concat(object.material || [])) {
+      if (!material) continue;
+      for (const value of Object.values(material)) if (value == null ? void 0 : value.isTexture) textures.add(value);
+      for (const uniform of Object.values(material.uniforms || {})) if ((_a = uniform == null ? void 0 : uniform.value) == null ? void 0 : _a.isTexture) textures.add(uniform.value);
+    }
+  });
+  return [...textures];
+}
 function release(root) {
   var _a;
   const geometries = /* @__PURE__ */ new Set(), materials = /* @__PURE__ */ new Set(), textures = /* @__PURE__ */ new Set(), bitmaps = /* @__PURE__ */ new Set(), skeletons = /* @__PURE__ */ new Set();
@@ -675,11 +891,13 @@ export {
   b as CameraControl,
   TIERS,
   TIER_SETTINGS,
+  assessDevice,
   chooseTier,
   createAvatar3DViewer,
   c as createCameraTracker,
   d as createMicLevel,
   e as createMouthAssist,
+  probeGPU,
   readSavedTier,
   resolveTier,
   runQuickBench,

@@ -2,6 +2,14 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## 1.19.1 — 2026-10-16
+
+- **3D à prova de PC fraco** (pedido do Robson: o navegador do trabalho não aguentou o player 3D). Medido com GPU por software (SwiftShader) e processador 6× mais lento: Estudante no 3D leve de 5 para 21–23 quadros/s; maior travada da aba de 6,6 s para menos de 0,7 s.
+- `createAvatar3DViewer(container, { quality, onContextLost, onSlow })`: antialias decidido na criação; perda do contexto WebGL não trava a página (para de desenhar e avisa o site); full que não segura 18 quadros/s cai sozinho para leve e leve abaixo de 10 avisa uma vez.
+- 3D leve de verdade: no máximo ~0,3 megapixel desenhado, texturas até 1024 (reduzidas fora da thread principal), sem contorno MToon, cabelo/roupa (spring bones) a cada 2 quadros, 24 quadros/s com cadência fixa (antes caía para 20 em tela de 60 Hz).
+- Carga em fatias: texturas uma por tarefa, shaders com `compileAsync` e link de um programa por tarefa (o primeiro quadro do Seed-san travava 0,94 s; agora 0,33 s). `load(buffer, name, { onProgress })` informa as etapas.
+- `probeGPU()` (instantâneo, inclui `failIfMajorPerformanceCaveat`) e `assessDevice()`: sem WebGL ou GPU por software decidem na hora, sem o teste de 1,5 s. `getStats()` para diagnóstico.
+
 ## 1.19.0 — 2026-10-16
 
 - **Avatar 3D (VRM) pronto para lançar**, pela entrada opcional `ania-avatar-react/three`: busto por padrão (P/M/G e `framing3D='full'`), idle, expressões, actions 1–9 e Esc em qualquer foco, boca por visemas que abre na altura do volume da fala.

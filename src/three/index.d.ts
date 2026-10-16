@@ -3,8 +3,21 @@ export interface ModelInfo {
   expressions: string[]; actions: { id: string; label: string }[];
   triangles: number; meshes: number;
 }
+export type LoadStage = 'parse' | 'textures' | 'shaders' | 'ready';
+export interface ViewerStats { tier: 'full' | 'light'; fps: number; pixelRatio: number; antialias: boolean; textures: number; geometries: number; drawCalls: number; triangles: number; lost: boolean }
+export interface Avatar3DViewerOptions {
+  /** Starting tier. Antialias is fixed when the viewer is created, so pass the tier here. */
+  quality?: 'full' | 'light';
+  /** The GPU dropped the 3D (driver reset, memory). The viewer stops drawing; show the 2D. */
+  onContextLost?: () => void;
+  /** Frame rate stayed far below target: full -> light is applied automatically; light -> 2d is only reported. */
+  onSlow?: (info: { from: 'full' | 'light'; to: 'light' | '2d'; fps: number }) => void;
+}
 export interface Avatar3DViewer {
-  load(buffer: ArrayBuffer, name: string): Promise<ModelInfo>;
+  /** Loading runs in short tasks (parse, textures one by one, async shader compile) so the page never freezes. */
+  load(buffer: ArrayBuffer, name: string, options?: { onProgress?: (stage: LoadStage, fraction: number) => void }): Promise<ModelInfo>;
+  getStats(): ViewerStats;
+  getQuality(): 'full' | 'light';
   playAction(id: string): void;
   stopAction(): void;
   isActionPlaying(): boolean;
@@ -28,10 +41,15 @@ export interface Avatar3DViewer {
   resetCamera(): void;
   dispose(): void;
 }
-export function createAvatar3DViewer(container: HTMLElement): Avatar3DViewer;
+export function createAvatar3DViewer(container: HTMLElement, options?: Avatar3DViewerOptions): Avatar3DViewer;
 
 export type QualityTier = 'full' | 'light' | '2d';
-export interface BenchResult { webgl: boolean; softwareRenderer: boolean; fps: number | null; memoryGB: number | null; cores: number | null; jsHeapMB: number | null; renderer: string }
+export interface GPUProbe { webgl: boolean; webgl2: boolean; softwareRenderer: boolean; caveat: boolean; renderer: string; vendor: string; maxTextureSize: number | null; memoryGB: number | null; cores: number | null }
+export interface BenchResult extends GPUProbe { fps: number | null; jsHeapMB: number | null }
+/** Instant (no drawing) GPU check. */
+export function probeGPU(): GPUProbe;
+/** probeGPU, then the 1.5 s bench only when it can change the answer. */
+export function assessDevice(options?: { durationMs?: number }): Promise<{ measurements: BenchResult; choice: TierChoice }>;
 export interface TierChoice { tier: QualityTier; reasons: string[]; camera: { allowed: boolean; reason: string } }
 export function runQuickBench(options?: { durationMs?: number }): Promise<BenchResult>;
 export function chooseTier(measurements?: Partial<BenchResult> & { loadMs?: number }): TierChoice;
@@ -40,7 +58,7 @@ export function readSavedTier(storage?: Storage | null): QualityTier | 'auto';
 export function saveTier(storage: Storage | null | undefined, tier: QualityTier | 'auto'): void;
 export function tierLabel(tier: QualityTier): string;
 export const TIERS: readonly QualityTier[];
-export const TIER_SETTINGS: Readonly<Record<QualityTier, { pixelRatioMax: number; fps: number; textureMax: number; antialias: boolean }>>;
+export const TIER_SETTINGS: Readonly<Record<QualityTier, { pixelRatioMax: number; fps: number; textureMax: number; antialias: boolean; outlines: boolean; maxPixels: number }>>;
 export const CAMERA_TEXT: Record<string, string>;
 export const CAMERA_MESSAGES: Record<string, string>;
 export interface CameraControlProps {

@@ -3,15 +3,31 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { inspectGLB } from './validate-glb.js';
+import { TIER_SETTINGS } from './quality.js';
 
 const bounded = (v) => Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
 
-/** Optional renderer: importing the main 2D package never imports this entry. */
-export function createAvatar3DViewer(container) {
+const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
+ * Optional renderer: importing the main 2D package never imports this entry.
+ * @param {HTMLElement} container
+ * @param {{quality?:'full'|'light', onContextLost?:()=>void, onSlow?:(info:{from:string,to:string,fps:number})=>void}} [options]
+ *   quality: starting tier (antialias is fixed at creation, so pass it here rather than calling setQuality later).
+ *   onContextLost: the GPU dropped the 3D (driver reset, too many tabs); the viewer is dead and the page should fall back.
+ *   onSlow: measured frame rate stayed far below the target. full -> light is applied automatically; light -> 2d is only reported.
+ */
+export function createAvatar3DViewer(container, options = {}) {
+  let tier = options.quality === 'light' ? 'light' : 'full';
   let renderer;
-  try { renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: 'low-power' }); }
+  try { renderer = new THREE.WebGLRenderer({ alpha: true, antialias: tier === 'full', powerPreference: tier === 'full' ? 'default' : 'low-power', failIfMajorPerformanceCaveat: false }); }
   catch { throw new Error('O navegador não conseguiu iniciar o 3D. Ative a aceleração gráfica ou tente outro navegador.'); }
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+  let lost = false;
+  renderer.domElement.addEventListener('webglcontextlost', (event) => {
+    // Never let a lost context freeze the page: stop drawing and hand over to the site (which shows the 2D).
+    event.preventDefault(); lost = true; cancelAnimationFrame(raf);
+    try { options.onContextLost?.(); } catch { /* the page handler must not break the viewer teardown */ }
+  });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.setClearColor(0x000000, 0);
   renderer.domElement.setAttribute('aria-label', 'Visualizador de avatar 3D');
@@ -30,33 +46,57 @@ export function createAvatar3DViewer(container) {
   let poses = { full: null, bust: null }, framing = 'full', mouthGain = 1, morphDrive = {}, morphRefs = null;
   const tmpV = new THREE.Vector3();
   let tracking = null, visemes = null, arms = null, trunk = null, mouthAssist = 0;
-  // Quality tier ('full' | 'light'): frame interval, pixel ratio and the largest texture kept (applied on load; see quality.js).
-  let frameMs = 1000 / 30, textureMax = 2048;
-  function setQuality(tier) {
-    const light = tier === 'light' || tier === '2d';
-    frameMs = light ? 1000 / 24 : 1000 / 30; textureMax = light ? 512 : 2048;
-    renderer.setPixelRatio(light ? 1 : Math.min(window.devicePixelRatio || 1, 1.5)); resize();
+  // Quality tier ('full' | 'light', see quality.js TIER_SETTINGS): frame interval, pixel budget, largest texture, outlines.
+  let settings = TIER_SETTINGS[tier];
+  let frameMs = 1000 / settings.fps;
+  function setQuality(next) {
+    const was = tier;
+    tier = next === 'light' || next === '2d' ? 'light' : 'full';
+    settings = TIER_SETTINGS[tier]; frameMs = 1000 / settings.fps; resize();
+    // Going lighter also slims the model already on screen (textures, outlines); going back up keeps it until the next load.
+    if (model && tier === 'light' && was !== 'light') void slim(model);
+    slowSince = 0; fpsWindow.length = 0;
   }
-  /** Shrinks oversized textures in place (light tier). Returns how many were reduced. Never upscales. */
+  /** Shrinks oversized textures in place. Decodes/resizes off the main thread when the browser can. Never upscales. */
   async function shrinkTextures(root, max) {
     let reduced = 0; const seen = new Set();
     root.traverse((o) => { for (const m of [].concat(o.material || [])) for (const v of Object.values(m || {})) if (v?.isTexture && v.image && !seen.has(v)) seen.add(v); });
     for (const tex of seen) {
       const img = tex.image, w = img.width || img.videoWidth || 0, h = img.height || img.videoHeight || 0;
       if (!w || !h || Math.max(w, h) <= max) continue;
-      const k = max / Math.max(w, h), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const k = max / Math.max(w, h), cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
+      let next = null;
+      try { if (typeof createImageBitmap === 'function') next = await createImageBitmap(img, { resizeWidth: cw, resizeHeight: ch, resizeQuality: 'medium', imageOrientation: 'none', premultiplyAlpha: 'none', colorSpaceConversion: 'none' }); }
+      catch { next = null; }
+      if (!next) { const c = document.createElement('canvas'); c.width = cw; c.height = ch; c.getContext('2d').drawImage(img, 0, 0, cw, ch); next = c; }
       if (img.close) try { img.close(); } catch { /* already closed */ }
-      tex.image = c; tex.needsUpdate = true; reduced++;
+      tex.image = next; tex.needsUpdate = true; reduced++;
+      await nextTask();
     }
     return reduced;
+  }
+  /** Outline passes (MToon) draw every mesh twice; the light tier hides them. */
+  function setOutlines(root, visible) {
+    root.traverse((o) => { for (const m of [].concat(o.material || [])) if (m?.isOutline !== undefined && m.isOutline) m.visible = visible; });
+  }
+  async function slim(root) {
+    setOutlines(root, settings.outlines);
+    try { await shrinkTextures(root, settings.textureMax); } catch { /* keep full-size textures if shrinking fails */ }
   }
   const resize = () => {
     if (disposed) return;
     const width = Math.max(container.clientWidth, 1), height = Math.max(container.clientHeight, 1);
+    // Pixel budget: software GPUs pay per pixel, so the light tier caps the drawn area (the browser scales it up smoothly).
+    const dpr = window.devicePixelRatio || 1;
+    const ratio = Math.max(.5, Math.min(dpr, settings.pixelRatioMax, Math.sqrt(settings.maxPixels / (width * height))));
+    renderer.setPixelRatio(ratio);
     renderer.setSize(width, height, false); camera.aspect = width / height; camera.updateProjectionMatrix();
   };
-  const observer = new ResizeObserver(resize); observer.observe(container); resize();
+  const observer = new ResizeObserver(resize); observer.observe(container);
+  // Measured frame rate (only while visible and drawing) drives the automatic downgrade.
+  const fpsWindow = []; let slowSince = 0, slowReported = false, measuredFps = 0;
+  let springDt = 0, springTick = 0; let lastDraw = 0;
+  resize();
 
   function resetCamera() {
     if (!cameraPose) { camera.position.set(0, 1, 3); controls.target.set(0, .8, 0); }
@@ -74,8 +114,18 @@ export function createAvatar3DViewer(container) {
     if (model) { mixer?.stopAllAction(); mixer?.uncacheRoot(model); scene.remove(model); release(model); }
     model = vrm = mixer = null; clips = []; manual = {}; speech = 0; tracking = null; visemes = null; morphRefs = null; arms = null; trunk = null;
   }
-  async function load(buffer, name) {
+  /**
+   * @param {ArrayBuffer} buffer
+   * @param {string} [name]
+   * @param {{onProgress?:(stage:'parse'|'textures'|'shaders'|'ready', fraction:number)=>void}} [loadOptions]
+   *   Loading is split into short tasks (parse, texture upload one by one, shader compile in parallel when the GPU allows)
+   *   so a slow computer keeps scrolling and clicking while the avatar is being prepared.
+   */
+  async function load(buffer, name, loadOptions = {}) {
     if (disposed) throw new Error('O visualizador foi fechado.');
+    if (lost) throw new Error('O 3D parou neste navegador. Recarregue a página para tentar de novo.');
+    const progress = (stage, fraction) => { try { loadOptions.onProgress?.(stage, fraction); } catch { /* UI callback errors never break loading */ } };
+    progress('parse', 0);
     const ticket = ++generation;
     const inspection = inspectGLB(buffer);
     const manager = new THREE.LoadingManager();
@@ -118,9 +168,34 @@ export function createAvatar3DViewer(container) {
     }
     if (framing === 'bust' && poses.bust) cameraPose = poses.bust;
     const nextMorphs = resolveMorphs(next);
-    if (textureMax < 2048) { try { await shrinkTextures(next, textureMax); } catch { /* keep full-size textures if shrinking fails */ } }
+    progress('textures', 0);
+    await slim(next);
+    if (disposed || ticket !== generation) { release(next); throw new Error('Carregamento substituído por outro modelo.'); }
+    // Upload textures one per task (a 2048 texture can take a second on a software GPU), then compile the shaders.
+    const textures = collectTextures(next);
+    for (let i = 0; i < textures.length; i++) {
+      try { renderer.initTexture(textures[i]); } catch { /* uploaded on first draw instead */ }
+      progress('textures', (i + 1) / textures.length);
+      await nextTask();
+      if (disposed || ticket !== generation) { release(next); throw new Error('Carregamento substituído por outro modelo.'); }
+    }
+    progress('shaders', 0);
+    try { await renderer.compileAsync(next, camera, scene); } catch { /* compiled on first draw instead */ }
+    // Without KHR_parallel_shader_compile the driver links on first use, freezing the first frame (about 1 s for 15 programs).
+    // Touch each program's uniforms in its own task so the wait is paid in small slices during loading.
+    const programs = new Set();
+    next.traverse((o) => { for (const m of [].concat(o.material || [])) { const pr = m && renderer.properties.get(m).currentProgram; if (pr) programs.add(pr); } });
+    let linked = 0;
+    for (const program of programs) {
+      try { program.getUniforms(); } catch { /* reported by three on first draw */ }
+      progress('shaders', ++linked / programs.size);
+      await nextTask();
+      if (disposed || ticket !== generation) { release(next); throw new Error('Carregamento substituído por outro modelo.'); }
+    }
+    if (disposed || ticket !== generation) { release(next); throw new Error('Carregamento substituído por outro modelo.'); }
     dropModel(); model = next; vrm = nextVRM; morphRefs = nextMorphs; clips = gltf.animations || []; mixer = new THREE.AnimationMixer(model);
     mixer.addEventListener('finished', () => stopAction()); scene.add(model); resetCamera();
+    progress('ready', 1);
     const expressions = vrm?.expressionManager?.expressions?.map((e) => e.expressionName) || [];
     return {
       name: name || 'Avatar 3D', format: vrm ? 'vrm' : 'glb', humanoid: !!vrm?.humanoid,
@@ -141,10 +216,15 @@ export function createAvatar3DViewer(container) {
     clipAction = mixer.clipAction(clip); clipAction.setLoop(THREE.LoopOnce, 1); clipAction.clampWhenFinished = false; clipAction.reset().play();
   }
   function frame(now) {
-    if (disposed) return;
+    if (disposed || lost) return;
     raf = requestAnimationFrame(frame);
-    if (document.hidden || now - previous < frameMs) return;
-    const dt = Math.min((now - previous) / 1000 || 0, .1); previous = now; elapsed += dt;
+    if (document.hidden) { previous = lastDraw = now; return; }
+    // Fixed cadence (keeps phase, small tolerance) so a 60 Hz screen averages 24/30 fps instead of rounding down to 20.
+    if (now - previous < frameMs - 4) return;
+    previous += frameMs; if (now - previous > frameMs) previous = now;
+    const gap = now - lastDraw; lastDraw = now;
+    const dt = Math.min(gap / 1000 || 0, .1); elapsed += dt;
+    if (model && gap > 0 && gap < 2000) watchSpeed(now, gap);
     if (vrm?.humanoid && !clipAction) {
       vrm.humanoid.resetNormalizedPose();
       const bone = (id) => vrm.humanoid.getNormalizedBoneNode(id);
@@ -205,7 +285,14 @@ export function createAvatar3DViewer(container) {
         vrm.expressionManager.setValue(key, bounded(value));
       }
     }
-    mixer?.update(dt); vrm?.update(dt);
+    mixer?.update(dt);
+    if (vrm && tier === 'light' && vrm.springBoneManager) {
+      // Light tier: hair/cloth physics (the most expensive part of vrm.update on dense models) steps every other frame.
+      const springs = vrm.springBoneManager; springDt += dt;
+      vrm.springBoneManager = undefined;
+      try { vrm.update(dt); } finally { vrm.springBoneManager = springs; }
+      if ((springTick = (springTick + 1) % 2) === 0) { springs.update(springDt); springDt = 0; }
+    } else vrm?.update(dt);
     // Extra face controls the VRM presets do not cover (brows, tongue): drive the base's own morph targets by name,
     // after vrm.update so the preset binds cannot overwrite them. Only ever raises an influence, never lowers one.
     if (morphRefs && tracking?.expressions) {
@@ -216,11 +303,33 @@ export function createAvatar3DViewer(container) {
     }
     controls.update(); renderer.render(scene, camera);
   }
+  /** Rolling 3 s frame rate. Full tier stuck under 60% of its target for 4 s drops to light; light stuck under 10 fps is reported once. */
+  function watchSpeed(now, gap) {
+    fpsWindow.push([now, gap]);
+    while (fpsWindow.length && now - fpsWindow[0][0] > 3000) fpsWindow.shift();
+    if (fpsWindow.length < 8) return;
+    const span = fpsWindow.reduce((s, [, g]) => s + g, 0);
+    measuredFps = Math.round(fpsWindow.length / (span / 1000) * 10) / 10;
+    const floor = tier === 'full' ? settings.fps * .6 : 10;
+    if (measuredFps >= floor) { slowSince = 0; return; }
+    if (!slowSince) { slowSince = now; return; }
+    if (now - slowSince < 4000) return;
+    slowSince = 0;
+    if (tier === 'full') { setQuality('light'); try { options.onSlow?.({ from: 'full', to: 'light', fps: measuredFps }); } catch { /* page callback */ } }
+    else if (!slowReported) { slowReported = true; try { options.onSlow?.({ from: 'light', to: '2d', fps: measuredFps }); } catch { /* page callback */ } }
+  }
   raf = requestAnimationFrame(frame);
+  /** What the diagnostics page and the admin stage show. */
+  function getStats() {
+    const gl = renderer.getContext();
+    return { tier, fps: measuredFps, pixelRatio: renderer.getPixelRatio(), antialias: !!gl.getContextAttributes?.()?.antialias,
+      textures: renderer.info.memory.textures, geometries: renderer.info.memory.geometries, drawCalls: renderer.info.render.calls,
+      triangles: renderer.info.render.triangles, lost };
+  }
   function dispose() {
     if (disposed) return;
     disposed = true; generation++; cancelAnimationFrame(raf); observer.disconnect(); controls.dispose(); dropModel();
-    renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
+    renderer.dispose(); try { renderer.forceContextLoss(); } catch { /* already lost */ } renderer.domElement.remove();
   }
   const finiteOr0 = (v) => (Number.isFinite(v) ? v : 0);
   function setFraming(mode) {
@@ -252,7 +361,7 @@ export function createAvatar3DViewer(container) {
   function setVisemes(values) {
     visemes = values ? Object.fromEntries(Object.entries(values).map(([k, v]) => [k, bounded(v)])) : null;
   }
-  return { load, playAction, stopAction, isActionPlaying: () => !!action || !!clipAction, setIdle: (value) => { idle = !!value; }, setExpression: (key, value) => { manual[key] = bounded(value); }, setSpeechLevel: (value) => { speech = bounded(value); }, setQuality, setTracking, setArms, setMouthAssist: (value) => { mouthAssist = bounded(value); }, setVisemes, setFraming, faceSupport, resetCamera, dispose };
+  return { load, playAction, stopAction, isActionPlaying: () => !!action || !!clipAction, setIdle: (value) => { idle = !!value; }, setExpression: (key, value) => { manual[key] = bounded(value); }, setSpeechLevel: (value) => { speech = bounded(value); }, setQuality, setTracking, setArms, setMouthAssist: (value) => { mouthAssist = bounded(value); }, setVisemes, setFraming, faceSupport, resetCamera, getStats, getQuality: () => tier, dispose };
 }
 
 /** Finger -> [VRM joint, max curl in radians] (z rotation closes a finger in the normalized rig). The thumb is deliberately not driven. */
@@ -287,6 +396,18 @@ function resolveMorphs(root) {
   return out;
 }
 
+function collectTextures(root) {
+  const textures = new Set();
+  root.traverse((object) => {
+    for (const material of [].concat(object.material || [])) {
+      if (!material) continue;
+      for (const value of Object.values(material)) if (value?.isTexture) textures.add(value);
+      for (const uniform of Object.values(material.uniforms || {})) if (uniform?.value?.isTexture) textures.add(uniform.value);
+    }
+  });
+  return [...textures];
+}
+
 function release(root) {
   const geometries = new Set(), materials = new Set(), textures = new Set(), bitmaps = new Set(), skeletons = new Set();
   root.traverse((object) => {
@@ -313,4 +434,4 @@ export { createCameraTracker, CAMERA_MESSAGES } from './camera-tracker.js';
 export { createMicLevel } from './mic-level.js';
 export { createMouthAssist } from './mouth-fusion.js';
 export { chooseTier, resolveTier, readSavedTier, saveTier, tierLabel, TIERS, TIER_SETTINGS } from './quality.js';
-export { runQuickBench } from './quality-bench.js';
+export { runQuickBench, probeGPU, assessDevice } from './quality-bench.js';

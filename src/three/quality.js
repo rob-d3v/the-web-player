@@ -1,23 +1,25 @@
 // Quality tier selection ("modo automatico"). Pure logic: examples/test-quality.mjs. The measurements come from quality-bench.js (browser).
 //
-// Tiers:  'full'  = 3D completo (pixel ratio up to 1.5, 30 fps, full textures)
-//         'light' = 3D leve (pixel ratio 1, textures downscaled to 512, 24 fps, no antialias)
+// Tiers:  'full'  = 3D completo (pixel ratio up to 1.5, 30 fps, full textures, antialias, outlines)
+//         'light' = 3D leve (at most ~0.4 megapixel drawn, textures downscaled to 1024, 24 fps, no antialias, no outlines)
 //         '2d'    = 2D (the 3D is too heavy for this device; a light 2D pack is recommended)
 // The choice is a recommendation: the user can always override it and the override is saved.
 
 export const TIERS = Object.freeze(['full', 'light', '2d']);
 
 /** What each tier changes in the viewer. */
+// maxPixels = drawn pixels budget (CSS size x pixel ratio²); software GPUs pay per pixel, so the light tier caps it.
 export const TIER_SETTINGS = Object.freeze({
-  full: { pixelRatioMax: 1.5, fps: 30, textureMax: 2048, antialias: true },
-  light: { pixelRatioMax: 1, fps: 24, textureMax: 512, antialias: false },
-  '2d': { pixelRatioMax: 1, fps: 24, textureMax: 512, antialias: false },
+  full: Object.freeze({ pixelRatioMax: 1.5, fps: 30, textureMax: 2048, antialias: true, outlines: true, maxPixels: 2.4e6 }),
+  light: Object.freeze({ pixelRatioMax: 1, fps: 24, textureMax: 1024, antialias: false, outlines: false, maxPixels: 3e5 }),
+  '2d': Object.freeze({ pixelRatioMax: 1, fps: 24, textureMax: 1024, antialias: false, outlines: false, maxPixels: 3e5 }),
 });
 
 const num = (v) => (v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null);
 
 /**
- * @param {{webgl?:boolean, softwareRenderer?:boolean, fps?:number, loadMs?:number, memoryGB?:number, cores?:number, jsHeapMB?:number}} m
+ * @param {{webgl?:boolean, softwareRenderer?:boolean, caveat?:boolean, fps?:number, loadMs?:number, memoryGB?:number, cores?:number, jsHeapMB?:number}} m
+ *   caveat: the browser itself flags a "major performance caveat" for WebGL (GPU blocked by the driver list, or software).
  * @returns {{tier:'full'|'light'|'2d', reasons:string[], camera:{allowed:boolean, reason:string}}}
  */
 export function chooseTier(m = {}) {
@@ -26,8 +28,10 @@ export function chooseTier(m = {}) {
   // No WebGL, or software rendering (SwiftShader/llvmpipe): 3D would crawl. Raspberry Pi without GPU acceleration lands here.
   if (m.webgl === false) return { tier: '2d', reasons: ['Este aparelho não tem WebGL.'], camera: { allowed: false, reason: 'A câmera precisa do 3D, que não roda aqui.' } };
   if (m.softwareRenderer) reasons.push('Sem aceleração de vídeo (renderização por software).');
+  else if (m.caveat) reasons.push('O navegador avisa que o vídeo deste computador é lento para 3D.');
   let score = 2; // 2 = full, 1 = light, 0 = 2d
   if (m.softwareRenderer) score = Math.min(score, 0);
+  if (m.caveat) score = Math.min(score, 1);
   if (fps !== null) { if (fps < 12) { score = Math.min(score, 0); reasons.push(`Só ${Math.round(fps)} quadros por segundo no teste.`); } else if (fps < 26) { score = Math.min(score, 1); reasons.push(`${Math.round(fps)} quadros por segundo no teste.`); } }
   if (mem !== null && mem <= 2) { score = Math.min(score, 1); reasons.push(`Pouca memória (${mem} GB).`); }
   if (mem !== null && mem <= 1) score = Math.min(score, 0);
