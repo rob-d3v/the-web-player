@@ -44,5 +44,7 @@
     "2": "Processando...",
     "3": "Só um instante...",
     "4": "Estou verificando isso para você..."
-  }
+  },
+  "chat.human.agent": "Equipe",
+  "chat.human.active": "Atendimento humano em andamento"
 }

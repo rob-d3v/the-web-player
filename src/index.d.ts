@@ -32,7 +32,16 @@ export interface PiperStatus {
 
 // ===== Component Props =====
 
+/** Optional local 3D source. Omit/null to retain the default 2D renderer. */
+export interface Avatar3DSource {
+  model: Blob;
+  name: string;
+  idle?: boolean;
+  expressionValues?: Record<string, number>;
+}
+
 export interface AniaAvatarProps {
+  avatar3D?: Avatar3DSource | null;
   /**
    * Kill switch. When `true` the component renders nothing and mounts nothing —
    * no `.ania` download/decrypt, no canvas, no TTS model fetch, no webhook.
@@ -159,6 +168,18 @@ export interface AniaAvatarProps {
   isTyping?: boolean;
   talking?: boolean;
   enableActionHotkeys?: boolean;
+  /** 3D avatar only: show the webcam mirror control (still requires the visitor to press "Ligar câmera"). Needs `@mediapipe/tasks-vision`. */
+  enableCamera3D?: boolean;
+  /** 3D framing: 'bust' (chest up, default) or 'full' (whole body). */
+  framing3D?: 'bust' | 'full';
+  /** Arms the camera must never move, as local bone quaternions: { left?: { upper, lower } }. */
+  armHolds3D?: { left?: { upper: number[]; lower: number[] }; right?: { upper: number[]; lower: number[] } };
+  bodyTracking3D?: boolean;
+  /** Show a button that plays an audio file (mp3/wav/ogg) on the avatar as if it were TTS. Off by default. */
+  enableVoiceClip?: boolean;
+  /** Loudness gate for the talk frames; default 0.08 open / 0.03 close (the .ania audio block). */
+  voiceClipThresholds?: { talkThreshold?: number; silenceThreshold?: number };
+  cameraControlPosition?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
   onActionStart?: (actionId: string) => void;
   onActionEnd?: () => void;
   // Initial action
@@ -240,6 +261,10 @@ export interface AvatarChatbotProps extends AniaAvatarProps {
   // n8n/webhook authentication
   webhookApiKey?: string;
   webhookHeaders?: Record<string, string>;
+  /** Same-site authenticated endpoint returning {messages, paused}; no provider secret in browser. */
+  inboxUrl?: string;
+  inboxPollMs?: number;
+  webhookCredentials?: RequestCredentials;
   /**
    * Constant fields merged into EVERY webhook POST body — how the host tells
    * the backend something the widget cannot know (tenant, route context,
@@ -368,6 +393,7 @@ export interface SpeakOptions {
 }
 
 export interface ChatResponsePayload {
+  paused?: boolean;
   message?: string;
   content?: string;
   text?: string;
@@ -379,6 +405,10 @@ export interface UseChatbotOptions {
   webhookUrl?: string;
   webhookApiKey?: string;
   webhookHeaders?: Record<string, string>;
+  /** Same-site authenticated endpoint returning {messages, paused}; no provider secret in browser. */
+  inboxUrl?: string;
+  inboxPollMs?: number;
+  webhookCredentials?: RequestCredentials;
   /**
    * Client-side responder override — replaces the webhook POST. Returns the
    * reply as a string or `{ message|content|text, attachments?, action? }`.
@@ -410,7 +440,8 @@ export interface ChatAttachment {
 }
 
 export interface ChatMessage {
-  id: number;
+  id: number | string;
+  authorType?: 'human';
   role: 'user' | 'assistant' | 'error';
   content: string;
   timestamp: string;
@@ -421,6 +452,7 @@ export interface ChatMessage {
 }
 
 export interface UseChatbotResult {
+  isHumanTakeover: boolean;
   messages: ChatMessage[];
   sendMessage: (message: string, metadata?: any) => Promise<ChatMessage | null>;
   isLoading: boolean;
@@ -1187,3 +1219,5 @@ export declare function getDeviceId(options?: { enabled?: boolean; key?: string 
  * text comes back identical; non-strings pass through. Never returns HTML. */
 export declare function stripMarkdown<T>(text: T): T;
 export declare function resetDeviceId(options?: { key?: string }): string;
+/** Secure human-inbox capability supported by this build. */
+export const HUMAN_INBOX_PROTOCOL: 1;

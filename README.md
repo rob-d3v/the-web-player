@@ -1220,3 +1220,27 @@ This library is compiled with maximum obfuscation:
 ## License
 
 MIT
+
+### Human inbox (1.18.2)
+
+`inboxUrl` opts the existing avatar into human replies. The host's authenticated backend exposes a GET endpoint returning `{messages:[{id,role:'assistant',content,created_at}],paused:boolean}` and validates conversation ownership. The widget sends the active flow/tab reference in `X-Ania-Session-Id`, advances an exact bigint cursor (`after`), deduplicates replies, backs off on outages and aborts on unmount. Polling starts only after the first successful message. Human messages show the Team label and are never spoken as the avatar.
+
+For a public cross-origin backend, use the signed capability envelope: chat returns `inbox_token`; later chat and polls carry `X-Ania-Inbox-Token`. Tokens remain in component memory, not URLs/storage. The backend must mint unpredictable identities, validate token signature/expiry/context and derive its gateway reference server-side. A caller's arbitrary session ID must never grant inbox access. Missing capability has no permission to read history. Refresh or clear starts a new conversation; old conversations remain available to the operator.
+
+Optional props: `inboxPollMs` (default 4000, minimum 2000); `webhookCredentials` (default `same-origin`, set only as required by the host). Existing `webhookHeaders` are retained for authenticated hosts. The backend `{paused:true,message:''}` response keeps the user's message without inventing an AI answer; `useChatbot().isHumanTakeover` exposes the state. No inbox URL means the original request/poll behavior.
+
+Build safely with `npm run build:local`; publishing/distribution is a separate owner-controlled step.
+
+
+### Optional 3D avatar preview
+
+Import `createAvatar3DViewer` from `ania-avatar-react/three` for a local VRM/GLB viewer.
+Alternatively pass `avatar3D={{ model: localBlob, name: 'avatar.vrm', idle: true }}` to
+`AvatarChatbot` to keep its existing chat, TTS and flow UI with the optional 3D renderer.
+The 3D code loads on demand; omit this prop to retain the 2D player. Embedded files only,
+32 MiB maximum. VRM humanoids expose idle, expressions and built-in wave/nod actions;
+GLB animations appear when present. Focus the 3D stage for 1–9/Escape actions.
+The mouth follows the existing audio envelope (or browser speech boundary pulses),
+not phoneme alignment. Image-to-3D generation, webcam capture and paid action packs are
+not included. `npm run test:three` validates the bounded file importer. Use
+`npm run build:local` to build without publishing/distributing to other applications.

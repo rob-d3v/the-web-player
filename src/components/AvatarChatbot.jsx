@@ -9,6 +9,7 @@ import { useSpeechRecognition } from '../hooks/useSpeechRecognition.js';
 import { useChatbot } from '../hooks/useChatbot.js';
 import { useFlowEngine } from '../hooks/useFlowEngine.js';
 import { useLipSync } from '../hooks/useLipSync.js';
+import { useVoiceClip } from '../hooks/useVoiceClip.js';
 import { useActionFrames } from '../hooks/useActionFrames.js';
 import { usePlugins } from '../hooks/usePlugins.js';
 import { useWakeWord } from '../hooks/useWakeWord.js';
@@ -63,6 +64,7 @@ const AvatarChatbotWidget = ({
   avatarUrl,
   avatarPassword,
   avatarData,
+  avatar3D = null,
   authToken,
   webhookUrl,
   position = "bottom-right",
@@ -151,6 +153,9 @@ const AvatarChatbotWidget = ({
   // n8n authentication
   webhookApiKey = null,
   webhookHeaders = {},
+  inboxUrl = null,
+  inboxPollMs = 4000,
+  webhookCredentials = 'same-origin',
   // Constant fields merged into EVERY webhook POST body — the host's way of
   // telling the backend something the widget itself does not know (tenant,
   // route context, campaign...). Merged FIRST, so it can never overwrite
@@ -203,6 +208,14 @@ const AvatarChatbotWidget = ({
   ambientActionIds = null,
   greetingAction = 'auto',
   enableActionHotkeys = true,
+  enableCamera3D = false,
+  cameraControlPosition = 'bottom-right',
+  framing3D = 'bust',
+  armHolds3D = {},
+  // Audio-file-as-TTS button (mp3/wav/ogg). Thresholds default to the .ania's own `audio` block when the host passes it.
+  enableVoiceClip = false,
+  voiceClipThresholds = undefined,
+  bodyTracking3D = true,
   // Initial action props
   initialAction = null,
   initialActionLoop = false,
@@ -454,7 +467,7 @@ const AvatarChatbotWidget = ({
     maxChunkChars: maxChunkChars,
     firstChunkMaxChars: firstChunkMaxChars,
     onChunkAudio: (audioEl) => {
-      if (lipSyncEnabled && lipSyncConnectRef.current && audioEl) {
+      if ((lipSyncEnabled || avatar3D) && lipSyncConnectRef.current && audioEl) {
         lipSyncConnectRef.current(audioEl);
       }
     },
@@ -482,7 +495,7 @@ const AvatarChatbotWidget = ({
   // No longer gated on the provider. The browser SpeechSynthesis path has no
   // element to analyse, but it drives the same envelope via synthetic pulses,
   // and the hook is inert when nothing is connected to it.
-  const lipSync = useLipSync({ enabled: lipSyncEnabled });
+  const lipSync = useLipSync({ enabled: lipSyncEnabled || !!avatar3D });
 
   // Keep the per-chunk reconnect ref pointed at the current connect fn.
   useEffect(() => {
@@ -512,7 +525,7 @@ const AvatarChatbotWidget = ({
     actions: configuredActions.length ? configuredActions : EMPTY_ACTIONS,
     enabled: isAvatarLoaded,
     configureActions: false,
-    enableHotkeys: enableActionHotkeys,
+    enableHotkeys: enableActionHotkeys && !avatar3D,
     animationController,
     onActionStart: undefined,
     onActionEnd: undefined
@@ -584,6 +597,11 @@ const AvatarChatbotWidget = ({
       }
     },
   });
+
+  // Play an mp3/wav as if it were TTS: loudness drives the mouth and the talk frames switch at the avatar's own threshold.
+  const voiceClip = useVoiceClip({ lipSync, getController: () => avatarRef?.playerRef?.current?.animationController || null,
+    thresholds: voiceClipThresholds });
+  const voiceFileRef = useRef(null);
 
   useEffect(() => {
     speakRef.current = speak;
@@ -706,11 +724,14 @@ const AvatarChatbotWidget = ({
     previousMinimizedRef.current = isMinimized;
   };
 
-  const { messages, sendMessage, isLoading, error } = useChatbot({
+  const { messages, sendMessage, isLoading, error, isHumanTakeover } = useChatbot({
     deviceIdEnabled,
     webhookUrl,
     webhookApiKey,
     webhookHeaders,
+    inboxUrl,
+    inboxPollMs,
+    webhookCredentials,
     extraPayload,
     onSendMessage,
     stripMarkdown,
@@ -1562,6 +1583,7 @@ const AvatarChatbotWidget = ({
       avatarUrl,
       avatarPassword,
       avatarData,
+      avatar3D,
       authToken,
       position,
       width,
@@ -1596,7 +1618,7 @@ const AvatarChatbotWidget = ({
       lipSyncResponsiveness,
       lipSyncSustainStyle,
       lipSyncWiggleSpeed,
-      lipSyncHook: lipSyncEnabled ? lipSync : null,
+      lipSyncHook: (lipSyncEnabled || avatar3D) ? lipSync : null,
       // Action frames passthrough
       actions,
       availableActions: hostAvailableActions,
@@ -1608,6 +1630,11 @@ const AvatarChatbotWidget = ({
       isListening,
       isTyping: !!inputMessage.trim() || !!flowInputValue.trim(),
       enableActionHotkeys,
+      enableCamera3D,
+      cameraControlPosition,
+      framing3D,
+      armHolds3D,
+      bodyTracking3D,
       // Initial action passthrough
       initialAction,
       initialActionLoop,
@@ -1654,10 +1681,11 @@ const AvatarChatbotWidget = ({
               // shown once with its answer controls below, so it's filtered out here.
               // Messages by the same sender are GROUPED: the name renders once
               // per run and bubbles inside a run sit closer together.
+              isHumanTakeover && jsx('div', { role: 'status', 'aria-live': 'polite', style: { padding: '8px 10px', fontSize: '12px' }, children: tr.t('chat.human.active') }),
               transcriptMessages.map((msg, idx) => {
                 const isUser = msg.role === "user";
                 const prev = transcriptMessages[idx - 1];
-                const isFirstOfGroup = !prev || prev.role !== msg.role;
+                const isFirstOfGroup = !prev || prev.role !== msg.role || prev.authorType !== msg.authorType;
                 return jsx("div", {
                   key: msg.id,
                   className: "ania-msg-in",
@@ -1683,7 +1711,7 @@ const AvatarChatbotWidget = ({
                           color: "#475569",
                           float: isUser ? "right" : "none"
                         },
-                        children: isUser ? userName : assistantName
+                        children: isUser ? userName : msg.authorType === 'human' ? tr.t('chat.human.agent') : assistantName
                       }),
                       // Balão da mensagem
                       jsxs("div", {
@@ -1967,6 +1995,17 @@ const AvatarChatbotWidget = ({
               }),
 
               // Botão enviar
+              enableVoiceClip && jsx("input", { ref: voiceFileRef, type: "file", accept: "audio/*", hidden: true, "data-testid": "voice-clip-input",
+                onChange: (e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) voiceClip.play(f); } }),
+              enableVoiceClip && jsx("button", {
+                type: "button", className: "ania-chat-iconbtn", "data-testid": "voice-clip-button",
+                onClick: () => (voiceClip.playing ? voiceClip.stop() : voiceFileRef.current?.click()),
+                "aria-label": voiceClip.playing ? "Parar o áudio" : "Tocar um áudio no avatar (mp3, wav)",
+                title: voiceClip.error || (voiceClip.playing ? "Parar o áudio" : "Tocar um áudio no avatar (mp3, wav)"),
+                style: { width: "44px", height: "44px", minWidth: "44px", flexShrink: 0, borderRadius: "50%", border: "none", cursor: "pointer", fontSize: "18px",
+                  backgroundColor: voiceClip.playing ? "#ef4444" : voiceClip.error ? "#f59e0b" : "#e5e7eb" },
+                children: voiceClip.playing ? "■" : "♪"
+              }),
               jsx("button", {
                 onClick: handleSend,
                 disabled: (!inputMessage.trim() && attachments.length === 0) || isLoading,

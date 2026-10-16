@@ -1,6 +1,6 @@
 {
   "name": "ania-avatar-react",
-  "version": "1.18.1",
+  "version": "1.19.0",
   "description": "React component library for ANIA Avatar with TTS, STT, and chatbot integration",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -11,6 +11,11 @@
       "types": "./src/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./three": {
+      "types": "./src/three/index.d.ts",
+      "import": "./dist/three.js",
+      "require": "./dist/three.cjs"
     }
   },
   "files": [
@@ -26,17 +31,18 @@
     "verify:runtime": "node player-runtime/verify.mjs",
     "harness:runtime": "node player-runtime/harness.mjs",
     "preview": "vite preview",
-    "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs && node examples/test-lip-sync-picker.mjs && node examples/test-frame-rate.mjs && node examples/test-lip-dsp.mjs && node examples/test-lip-animator.mjs && node examples/test-openness-map.mjs && node examples/test-device-id.mjs && node examples/test-strip-markdown.mjs && node examples/test-loading-contrast.mjs && node examples/test-control-icon-contrast.mjs && node examples/test-avatar-authored-defaults.mjs && node examples/test-ambient-actions.mjs",
+    "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs && node examples/test-lip-sync-picker.mjs && node examples/test-frame-rate.mjs && node examples/test-lip-dsp.mjs && node examples/test-lip-animator.mjs && node examples/test-openness-map.mjs && node examples/test-device-id.mjs && node examples/test-strip-markdown.mjs && node examples/test-loading-contrast.mjs && node examples/test-control-icon-contrast.mjs && node examples/test-avatar-authored-defaults.mjs && node examples/test-ambient-actions.mjs && node examples/test-inbox.mjs && node --test examples/test-three-validation.mjs examples/test-tracking-core.mjs examples/test-camera-tracker.mjs examples/test-body-core.mjs examples/test-body-tracker.mjs examples/test-voice-gate.mjs examples/test-mouth-fusion.mjs examples/test-quality.mjs",
     "test:ambient": "node --max-old-space-size=128 examples/test-ambient-actions.mjs",
     "test:avatar": "node examples/test-avatar-authored-defaults.mjs && node examples/test-openness-map.mjs",
     "test:tts": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs",
-    "prepublishOnly": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/index.js')||!fs.existsSync('dist/index.cjs')){console.error('dist/ ausente ou incompleto. Este pacote NAO se compila na publicacao: o dist vem pronto do repo privado via sync_web_player.py. Rode a distribuicao em vez de publicar a mao.');process.exit(1);}\""
+    "prepublishOnly": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/index.js')||!fs.existsSync('dist/index.cjs')){console.error('dist/ ausente ou incompleto. Este pacote NAO se compila na publicacao: o dist vem pronto do repo privado via sync_web_player.py. Rode a distribuicao em vez de publicar a mao.');process.exit(1);}\"",
+    "test:three": "node --test examples/test-three-validation.mjs"
   },
   "peerDependencies": {
-    "react": ">=17.0.0",
-    "react-dom": ">=17.0.0",
+    "onnxruntime-web": ">=1.17.0",
     "piper-tts-web": "^1.1.0",
-    "onnxruntime-web": ">=1.17.0"
+    "react": ">=17.0.0",
+    "react-dom": ">=17.0.0"
   },
   "peerDependenciesMeta": {
     "piper-tts-web": {
@@ -47,7 +53,9 @@
     }
   },
   "dependencies": {
-    "lucide-react": "^0.460.0"
+    "@pixiv/three-vrm": "3.5.5",
+    "lucide-react": "^0.460.0",
+    "three": "0.186.1"
   },
   "devDependencies": {
     "@types/react": "^18.2.56",
@@ -58,6 +66,7 @@
     "react-dom": "^18.3.1",
     "rollup-plugin-obfuscator": "^1.1.0",
     "terser": "^5.46.0",
+    "typescript": "5.3.3",
     "vite": "^5.1.4",
     "vite-plugin-dts": "^3.7.2"
   },

@@ -1,4 +1,5 @@
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { inboxBatch } from '../utils/inbox.js';
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { getDeviceId } from '../utils/device-id.js';
 import { stripMarkdown as stripMarkdownText } from '../utils/strip-markdown.js';
 
@@ -52,6 +53,9 @@ export const useChatbot = ({
   webhookUrl,
   webhookApiKey = null,
   webhookHeaders = {},
+  inboxUrl = null,
+  inboxPollMs = 4000,
+  webhookCredentials = 'same-origin',
   // Client-side responder override. When set, replaces the webhook POST: called
   // with (message, metadata), returns the reply as a string OR an object
   // { message|content|text, attachments?, action? }. Enables a fake/mock
@@ -90,6 +94,47 @@ export const useChatbot = ({
   translate
 } = {}) => {
   const [messages, setMessages] = useState([]);
+  const [inboxSession, setInboxSession] = useState(null);
+  const [isHumanTakeover, setIsHumanTakeover] = useState(false);
+  const inboxTokenRef = useRef(null);
+  const inboxHeadersRef = useRef(webhookHeaders);
+  inboxHeadersRef.current = webhookHeaders;
+  useEffect(() => {
+    if (!inboxUrl || !inboxSession) return;
+    let stopped = false;
+    let timer;
+    let cursor = '0';
+    let delay = Math.max(2000, Number(inboxPollMs) || 4000);
+    const controller = new AbortController();
+    const poll = async () => {
+      try {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        const url = new URL(inboxUrl, window.location.href);
+        url.searchParams.set('after', cursor);
+        const response = await fetch(url, { credentials: webhookCredentials, signal: controller.signal,
+          headers: { ...inboxHeadersRef.current, 'X-Ania-Session-Id': inboxSession, ...(inboxTokenRef.current?.token ? { 'X-Ania-Inbox-Token': inboxTokenRef.current.token } : {}) } });
+        if (stopped) return;
+        if (response.status === 401 || response.status === 403) { stopped = true; return; }
+        if (!response.ok) throw new Error('inbox_unavailable');
+        const batch = inboxBatch(await response.json(), cursor);
+        if (stopped) return;
+        cursor = batch.cursor;
+        setIsHumanTakeover(batch.paused);
+        // Human messages are labelled separately and never spoken by the AI avatar.
+        if (batch.messages.length) setMessages(prev => {
+          const ids = new Set(prev.map(m => m.id));
+          return [...prev, ...batch.messages.filter(m => !ids.has(m.id))];
+        });
+        delay = Math.max(2000, Number(inboxPollMs) || 4000);
+      } catch (err) {
+        if (!controller.signal.aborted) delay = Math.min(delay * 2, 30000);
+      } finally {
+        if (!stopped) timer = setTimeout(poll, delay);
+      }
+    };
+    timer = setTimeout(poll, Math.max(2000, Number(inboxPollMs) || 4000));
+    return () => { stopped = true; clearTimeout(timer); controller.abort(); };
+  }, [inboxUrl, inboxSession, inboxPollMs, webhookCredentials]);
 
   // Resolved once per mount: reading storage on every keystroke is pointless
   // and the value cannot change under us.
@@ -108,6 +153,7 @@ export const useChatbot = ({
 
   const sendMessage = useCallback(async (message, metadata = {}) => {
     const { attachments = [], ...restMetadata } = metadata;
+    const activeSession = metadata.sessionId || conversationIdRef.current;
 
     // Render the user's message immediately (optimistic), BEFORE any guard,
     // so typing + Enter always shows the bubble even if the webhook is
@@ -131,6 +177,8 @@ export const useChatbot = ({
       setError(null);
       try {
         const reply = await onSendMessage(message, metadata);
+        setInboxSession(activeSession);
+        if (reply?.paused === true) { setIsHumanTakeover(true); setIsLoading(false); return null; }
         let responseText = '';
         let responseAttachments = [];
         let responseAction = null;
@@ -210,7 +258,8 @@ export const useChatbot = ({
         // reshapes the body entirely, and identity has to survive that.
         "X-Ania-Device-Id": deviceId,
         "X-Ania-Session-Id": (metadata && metadata.sessionId) || conversationIdRef.current,
-        ...webhookHeaders
+        ...webhookHeaders,
+        ...(inboxUrl ? { 'X-Ania-Inbox-Protocol': '1', ...(inboxTokenRef.current?.session === activeSession ? { 'X-Ania-Inbox-Token': inboxTokenRef.current.token } : {}) } : {})
       };
 
       if (webhookApiKey) {
@@ -226,7 +275,7 @@ export const useChatbot = ({
       const attempt = async () => {
         let response;
         try {
-          response = await fetch(webhookUrl, { method: "POST", headers, body });
+          response = await fetch(webhookUrl, { method: "POST", headers, body, credentials: webhookCredentials });
         } catch (netErr) {
           // fetch rejects on network/CORS failure — no HTTP status available.
           const e = new Error(netErr && netErr.message ? netErr.message : "network error");
@@ -260,6 +309,9 @@ export const useChatbot = ({
       }
 
       const data = await response.json();
+      if (typeof data?.inbox_token === 'string') inboxTokenRef.current = { session: activeSession, token: data.inbox_token };
+      setInboxSession(activeSession);
+      if (data?.paused === true) { setIsHumanTakeover(true); setIsLoading(false); return null; }
 
       let responseText = "";
       let responseAttachments = [];
@@ -331,11 +383,14 @@ export const useChatbot = ({
       setIsLoading(false);
       return errorMessage;
     }
-  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, extraPayload, onResponse, onError, availableActions, onActionTriggered, translate, stripMarkdown]);
+  }, [webhookUrl, webhookApiKey, webhookHeaders, onSendMessage, formatRequest, parseResponse, extraPayload, onResponse, onError, availableActions, onActionTriggered, translate, stripMarkdown, webhookCredentials, inboxUrl]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
+    setInboxSession(null);
+    inboxTokenRef.current = null;
+    setIsHumanTakeover(false);
     // Start a genuinely new conversation on the backend too. Without this the
     // transcript is cleared locally but the agent keeps replying with the old
     // one in context, which reads as "clear did nothing". The deviceId is NOT
@@ -348,6 +403,7 @@ export const useChatbot = ({
     messages,
     sendMessage,
     isLoading,
+    isHumanTakeover,
     error,
     clearMessages,
     deviceId,

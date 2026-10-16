@@ -103,3 +103,5 @@ export {
 // Ready-made <AvatarChatbot> starting points (spread `.config` onto the widget
 // or into <AvatarConfigurator defaultValue={...}>).
 export { CHATBOT_TEMPLATES, CHATBOT_TEMPLATE_BY_ID } from './data/chatbot-templates.js';
+// Hosts can safely detect inbox support before switching their backend endpoint.
+export const HUMAN_INBOX_PROTOCOL = 1;

@@ -1,4 +1,5 @@
 import { useRef, useCallback, useEffect } from 'react';
+import { bandsFromSpectrum } from '../three/visemes.js';
 
 /**
  * useLipSync — Web Audio FFT analysis for mouth movement.
@@ -212,6 +213,16 @@ export const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } 
     return Math.sqrt(sumSquares / timeData.length);
   }, [kickResume]);
 
+  // Four spectral band energies (see three/visemes.js) so the 3D mouth can round for o/u and spread for e/i.
+  // Null when nothing is connected or the context is not running; callers then fall back to plain loudness.
+  const getBands = useCallback(() => {
+    if (!analyserRef.current || !dataArrayRef.current) return null;
+    const ctx = audioContextRef.current;
+    if (!ctx || ctx.state !== 'running') return null;
+    analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+    return bandsFromSpectrum(dataArrayRef.current, ctx.sampleRate, analyserRef.current.fftSize);
+  }, []);
+
   const disconnect = useCallback(() => {
     if (sourceRef.current) {
       try { sourceRef.current.disconnect(); } catch (e) {}
@@ -245,6 +256,7 @@ export const useLipSync = ({ enabled = false, fftSize = 2048, smoothing = 0.8 } 
     getSpectralFlux,
     getAmplitude,
     getRms,
+    getBands,
     disconnect,
     isConnected: () => !!connectedElementRef.current
   };

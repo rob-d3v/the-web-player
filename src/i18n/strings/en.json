@@ -44,5 +44,7 @@
     "2": "Processing...",
     "3": "Just a second...",
     "4": "I'm checking that for you..."
-  }
+  },
+  "chat.human.agent": "Team",
+  "chat.human.active": "A team member is handling this conversation"
 }

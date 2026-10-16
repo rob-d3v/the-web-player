@@ -2,6 +2,13 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## 1.19.0 — 2026-10-16
+
+- **Avatar 3D (VRM) pronto para lançar**, pela entrada opcional `ania-avatar-react/three`: busto por padrão (P/M/G e `framing3D='full'`), idle, expressões, actions 1–9 e Esc em qualquer foco, boca por visemas que abre na altura do volume da fala.
+- **Espelho de câmera opcional**: rosto, expressões, tronco e, atrás de botão, braços e mãos; nada liga antes do clique, desligar libera câmera e microfone. Chave "Ajudar a boca com o som do microfone" (ligada por padrão).
+- **Qualidade automática** 3D completo / 3D leve / 2D com teste rápido do aparelho; fps desconhecido não derruba mais para 2D.
+- mp3 tocando como fala (`enableVoiceClip`), braço preso por avatar (`armHolds3D`) e exports de câmera, microfone, qualidade e benchmark para a prévia do site.
+
 ## 1.18.1 — 2026-10-08
 
 - **Volta o comportamento original do avatar parado.** Sai o "render governor" da 1.17.0 (runtime `2.1.0-governor` e a pausa do `AniaAvatar`): o avatar não pausa mais quando acha que está fora da tela, minimizado ou ocioso, não reduz o idle para ~14 qps e não espera a página ficar ociosa para carregar o `.ania`. Pedido do Robson: o avatar ficava estático esperando um clique. Runtime volta ao `2.0.x`.

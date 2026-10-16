@@ -43,6 +43,7 @@ const AniaAvatarPlayer = forwardRef(({
   avatarUrl,
   avatarPassword,
   avatarData: externalAvatarData,
+  avatar3D = null,
   authToken,
   position = "bottom-left",
   width = 300,
@@ -146,6 +147,14 @@ const AniaAvatarPlayer = forwardRef(({
   isTyping = false,
   talking = false,
   enableActionHotkeys = true,
+  // 3D only: show the webcam-mirror control (off by default; the visitor must still press "Ligar câmera").
+  enableCamera3D = false,
+  cameraControlPosition = 'bottom-right',
+  // 3D framing: 'bust' = from the chest up (default), 'full' = whole body.
+  framing3D = 'bust',
+  // Arms that must never be moved by the camera (e.g. a character that always holds a lantern): { left: {upper:[x,y,z,w], lower:[x,y,z,w]} }.
+  armHolds3D = {},
+  bodyTracking3D = true,
   onActionStart,
   onActionEnd,
   // Initial action props
@@ -183,7 +192,12 @@ const AniaAvatarPlayer = forwardRef(({
   );
 
   const containerRef = useRef(null);
+  // 3D only: three size steps (1x, 1.35x, 1.7x of the host size) so the visitor can enlarge the avatar. Declared with the other
+  // hooks, before any early return, so the hook order never changes.
+  const [sizeStep3D, setSizeStep3D] = useState(0);
   const playerRef = useRef(null);
+  const threeOptionsRef = useRef(null);
+  threeOptionsRef.current = { lipSyncHook, onLoad, onError, talking, avatar3D };
   // Contract used by useAniaAvatarRef: ref.current.playerRef.current = player.
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -212,7 +226,7 @@ const AniaAvatarPlayer = forwardRef(({
   const hasDraggedRef = useRef(false);
 
   const ambientControls = useAmbientActions(isLoaded ? playerRef.current?.animationController : null, {
-    ambientActions, ambientActionMinSeconds, ambientActionMaxSeconds, ambientActionIds,
+    ambientActions: avatar3D ? false : ambientActions, ambientActionMinSeconds, ambientActionMaxSeconds, ambientActionIds,
     actions, availableActions, visible: isVisible,
     isTalking: isTalking || talking, isListening, isTyping
   }, [avatarUrl, avatarPassword, externalAvatarData, authToken]);
@@ -330,7 +344,7 @@ const AniaAvatarPlayer = forwardRef(({
   }, [draggable, isMinimized, isMobile]);
 
   useEffect(() => {
-    if (!detectAudio || !isLoaded || !playerRef.current) return;
+    if (avatar3D || !detectAudio || !isLoaded || !playerRef.current) return;
 
     let isActive = true;
 
@@ -465,6 +479,7 @@ const AniaAvatarPlayer = forwardRef(({
   }, [isTalking, isLoaded, detectAudio]);
 
   useEffect(() => {
+    if (avatar3D) return;
     // Cada troca tem sua própria carga: respostas antigas não podem recriar o player.
     let cancelled = false;
     let checkInterval = null;
@@ -1050,7 +1065,72 @@ const AniaAvatarPlayer = forwardRef(({
       }
       isLoadingRef.current = false;
     };
-  }, [avatarUrl, avatarPassword, externalAvatarData, authToken, preserveQuality]);
+  }, [avatarUrl, avatarPassword, externalAvatarData, authToken, preserveQuality, !!avatar3D]);
+
+  // Same stage and conversation, optional renderer; never waits for the 2D global.
+  useEffect(() => {
+    if (!avatar3D || !containerRef.current || !isVisible) return;
+    let cancelled = false;
+    let adapter = null;
+    setIsLoaded(false); setError(null); playbackBasisRef.current = null;
+    import('../three/player-adapter.js').then(async ({ create3DPlayerAdapter }) => {
+      if (cancelled || !containerRef.current) return;
+      adapter = create3DPlayerAdapter(containerRef.current, {
+        getRms: () => threeOptionsRef.current.lipSyncHook?.getRms?.() || 0,
+        getBands: () => threeOptionsRef.current.lipSyncHook?.getBands?.() || null,
+      });
+      await adapter.load(avatar3D);
+      if (cancelled) { adapter.dispose(); return; }
+      adapter.applySettings(threeOptionsRef.current.avatar3D || avatar3D);
+      adapter.setTalkingState(threeOptionsRef.current.talking);
+      playerRef.current = adapter; setIsLoaded(true);
+      threeOptionsRef.current.onLoad?.(adapter);
+    }).catch((err) => {
+      adapter?.dispose();
+      if (!cancelled) { setError(err.message); threeOptionsRef.current.onError?.(err); }
+    });
+    return () => {
+      cancelled = true; adapter?.dispose();
+      if (playerRef.current === adapter) playerRef.current = null;
+    };
+  }, [avatar3D?.model, avatar3D?.name, isVisible]);
+
+  useEffect(() => {
+    if (avatar3D && playerRef.current?.animationController?.is3D) {
+      playerRef.current.applySettings(avatar3D);
+      playerRef.current.setTalkingState(talking);
+    }
+  }, [avatar3D, talking]);
+
+  const [CameraControl3D, setCameraControl3D] = useState(null);
+  // 'bust' (default for the web player: waist up) or 'full' (whole body, opt in by the host).
+  useEffect(() => {
+    if (isLoaded && avatar3D) playerRef.current?.setFraming?.(framing3D);
+  }, [framing3D, isLoaded, !!avatar3D]);
+  // Same behaviour as the .ania actions (useActionFrames): the hotkey works anywhere on the page, not only while the
+  // avatar has focus, and never while the visitor is typing. 1-9 pick the nth action, Escape cancels it.
+  useEffect(() => {
+    if (!avatar3D || !enableActionHotkeys || !isLoaded) return;
+    const onKey = (event) => {
+      if (event.repeat || event.isComposing || event.ctrlKey || event.altKey || event.metaKey || event.defaultPrevented) return;
+      const target = event.target;
+      if (target?.closest?.('input,textarea,select,[contenteditable="true"],[contenteditable=""]') || target?.isContentEditable) return;
+      const ctrl = playerRef.current?.animationController;
+      if (!ctrl?.is3D) return;
+      if (event.key === 'Escape') { if (ctrl.isActionPlaying()) { event.preventDefault(); ctrl.cancelAction(); } return; }
+      if (!/^[1-9]$/.test(event.key)) return;
+      const action = ctrl.getActions()[Number(event.key) - 1];
+      if (action) { event.preventDefault(); ctrl.triggerAction(action.id); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [!!avatar3D, enableActionHotkeys, isLoaded]);
+  useEffect(() => {
+    if (!avatar3D || !enableCamera3D || CameraControl3D) return;
+    let cancelled = false;
+    import('../three/CameraControl.jsx').then((mod) => { if (!cancelled) setCameraControl3D(() => mod.default); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [!!avatar3D, enableCamera3D]);
 
   // Live-apply idle/talk speed when the host changes the props AFTER load — the
   // load effect above resolves speed only once at creation, so without this a
@@ -1233,14 +1313,18 @@ const AniaAvatarPlayer = forwardRef(({
     "top-left": { top: '24px', left: '24px' },
     "top-right": { top: '24px', right: '24px' }
   };
-  const currentWidth = currentDimensions.width;
-  const currentHeight = currentDimensions.height;
+  const SIZE_STEPS_3D = [1, 1.35, 1.7];
+  const scale3D = avatar3D ? SIZE_STEPS_3D[sizeStep3D] || 1 : 1;
+  const currentWidth = Math.round(currentDimensions.width * scale3D);
+  const currentHeight = Math.round(currentDimensions.height * scale3D);
   // Clamped rather than trusted: a host passing 0, 300 or a string would
   // otherwise produce a stage that vanishes or swallows the page.
   const stageMaxVh = (() => {
     const n = Number(avatarMaxHeightVh);
+    // 3D bust: a taller stage by default (the face is the point), growing with the P/M/G steps, but never more than 62% of the screen.
+    if (avatar3D && !Number.isFinite(n)) return Math.min(62, Math.round(46 * scale3D));
     if (!Number.isFinite(n)) return 34;
-    return Math.min(STAGE_MAX_VH_CEIL, Math.max(STAGE_MAX_VH_FLOOR, n));
+    return Math.min(STAGE_MAX_VH_CEIL, Math.max(STAGE_MAX_VH_FLOOR, avatar3D ? n * scale3D : n));
   })();
   const currentTheme = THEMES[theme] || THEMES.dark;
   const isMobileMinimized = isMobile && isMinimized;
@@ -1386,6 +1470,20 @@ const AniaAvatarPlayer = forwardRef(({
                   children: jsx(Maximize2, { size: 14, style: { color: controlIconColor } })
                 }
               ),
+              avatar3D && !isMinimized && jsx(
+                "button",
+                {
+                  type: "button", "data-testid": "size3d-button",
+                  onClick: () => setSizeStep3D((s) => (s + 1) % 3),
+                  style: {
+                    backgroundColor: transparent ? "rgba(0,0,0,0.5)" : currentTheme.controlBg, padding: '6px', minWidth: '44px', minHeight: '44px',
+                    touchAction: 'manipulation', borderRadius: '8px', backdropFilter: 'blur(4px)', border: 'none', cursor: 'pointer', color: controlIconColor, fontSize: '12px', fontWeight: 600
+                  },
+                  title: ["Aumentar o avatar", "Aumentar mais", "Voltar ao tamanho normal"][sizeStep3D],
+                  "aria-label": ["Aumentar o avatar", "Aumentar mais", "Voltar ao tamanho normal"][sizeStep3D],
+                  children: ["P", "M", "G"][sizeStep3D]
+                }
+              ),
               minimizable && !isMinimized && jsx(
                 "button",
                 {
@@ -1437,6 +1535,11 @@ const AniaAvatarPlayer = forwardRef(({
               "div",
               {
                 ref: containerRef,
+                tabIndex: avatar3D ? 0 : undefined,
+                onPointerDown: avatar3D ? (event) => {
+                  if (!event.target.closest('input,textarea,select,button,[contenteditable="true"]')) event.currentTarget.focus({ preventScroll: true });
+                } : undefined,
+                onKeyDown: undefined,
                 style: {
                   width: isMobileMinimized ? `${currentWidth}px` : '100%',
                   // On a phone with the chat open, cap the avatar stage so the
@@ -1487,8 +1590,8 @@ const AniaAvatarPlayer = forwardRef(({
                   position: "relative",
                   overflow: "hidden"
                 },
-                onClick: handleContainerClick,
-                title: minimizable ? (isMinimized ? tr.t("avatar.title.clickToMaximize") : tr.t("avatar.title.clickToMinimize")) : undefined,
+                onClick: avatar3D && !isMinimized ? undefined : handleContainerClick,
+                title: avatar3D && !isMinimized ? "3D · 1–9 / Esc" : minimizable ? (isMinimized ? tr.t("avatar.title.clickToMaximize") : tr.t("avatar.title.clickToMinimize")) : undefined,
                 children: [
                   // The label used to pulse its OWN opacity (1 → 0.5): ink at half opacity on a
                   // light page measured ~3.4:1 in production (axe, diatech.solutions, 2026-09-23),
@@ -1530,7 +1633,9 @@ const AniaAvatarPlayer = forwardRef(({
                       ]
                     }
                   ),
-                  error && jsx("div", { style: { color: '#f87171', fontSize: '0.75rem', padding: '8px', textAlign: 'center', position: "relative", zIndex: 1 }, children: error })
+                  error && jsx("div", { style: { color: '#f87171', fontSize: '0.75rem', padding: '8px', textAlign: 'center', position: "relative", zIndex: 1 }, children: error }),
+                  // Webcam mirror (opt-in): loaded only for 3D avatars whose host asked for it; MediaPipe loads only when the visitor presses "Ligar câmera".
+                  avatar3D && enableCamera3D && isLoaded && !isMinimized && CameraControl3D && jsx(CameraControl3D, { getPlayer: () => playerRef.current, position: cameraControlPosition, holds: armHolds3D, bodyTracking: bodyTracking3D }, "camera3d")
                 ]
               }
             ),
