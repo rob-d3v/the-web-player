@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { inspectGLB } from './validate-glb.js';
 import { TIER_SETTINGS } from './quality.js';
+import { isVRM0, mirrorPoseForVRM0 } from './vrm0-pose.js';
 
 const bounded = (v) => Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
 
@@ -269,6 +270,7 @@ export function createAvatar3DViewer(container, options = {}) {
           if (bone('rightLowerArm')) bone('rightLowerArm').rotation.z = (-.5 + Math.sin(age * 12) * .35) * Math.max(0, fade);
         } else if (bone('head')) bone('head').rotation.x = Math.sin(age * 8) * .2 * Math.max(0, fade);
       }
+      if (isVRM0(vrm)) mirrorPoseForVRM0(vrm.humanoid);
     }
     if (vrm?.expressionManager) {
       for (const expression of vrm.expressionManager.expressions) {

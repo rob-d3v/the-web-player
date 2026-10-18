@@ -195,6 +195,24 @@ const saveTier = (storage, tier) => {
 function tierLabel(tier) {
   return { full: "3D completo", light: "3D leve", "2d": "2D" }[tier] || "3D completo";
 }
+function isVRM0(vrm) {
+  var _a;
+  return ((_a = vrm == null ? void 0 : vrm.meta) == null ? void 0 : _a.metaVersion) === "0";
+}
+function mirrorPoseForVRM0(humanoid) {
+  var _a;
+  const bones = humanoid == null ? void 0 : humanoid.normalizedHumanBones;
+  if (!bones) return 0;
+  let flipped = 0;
+  for (const bone of Object.values(bones)) {
+    const q = (_a = bone == null ? void 0 : bone.node) == null ? void 0 : _a.quaternion;
+    if (!q) continue;
+    q.x = -q.x;
+    q.z = -q.z;
+    flipped++;
+  }
+  return flipped;
+}
 const SOFTWARE = /swiftshader|llvmpipe|software|softpipe|microsoft basic render/i;
 function probeGPU({ document: doc = globalThis.document, nav = globalThis.navigator } = {}) {
   var _a, _b;
@@ -667,6 +685,7 @@ function createAvatar3DViewer(container, options = {}) {
           if (bone("rightLowerArm")) bone("rightLowerArm").rotation.z = (-0.5 + Math.sin(age * 12) * 0.35) * Math.max(0, fade);
         } else if (bone("head")) bone("head").rotation.x = Math.sin(age * 8) * 0.2 * Math.max(0, fade);
       }
+      if (isVRM0(vrm)) mirrorPoseForVRM0(vrm.humanoid);
     }
     if (vrm == null ? void 0 : vrm.expressionManager) {
       for (const expression of vrm.expressionManager.expressions) {

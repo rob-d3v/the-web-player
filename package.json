@@ -1,6 +1,6 @@
 {
   "name": "ania-avatar-react",
-  "version": "1.19.1",
+  "version": "1.19.2",
   "description": "React component library for ANIA Avatar with TTS, STT, and chatbot integration",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -31,7 +31,7 @@
     "verify:runtime": "node player-runtime/verify.mjs",
     "harness:runtime": "node player-runtime/harness.mjs",
     "preview": "vite preview",
-    "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs && node examples/test-lip-sync-picker.mjs && node examples/test-frame-rate.mjs && node examples/test-lip-dsp.mjs && node examples/test-lip-animator.mjs && node examples/test-openness-map.mjs && node examples/test-device-id.mjs && node examples/test-strip-markdown.mjs && node examples/test-loading-contrast.mjs && node examples/test-control-icon-contrast.mjs && node examples/test-avatar-authored-defaults.mjs && node examples/test-ambient-actions.mjs && node examples/test-inbox.mjs && node --test examples/test-three-validation.mjs examples/test-tracking-core.mjs examples/test-camera-tracker.mjs examples/test-body-core.mjs examples/test-body-tracker.mjs examples/test-voice-gate.mjs examples/test-mouth-fusion.mjs examples/test-quality.mjs",
+    "test": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs && node examples/test-flow-engine.mjs && node examples/test-robs-frontend.mjs && node examples/test-lip-sync-picker.mjs && node examples/test-frame-rate.mjs && node examples/test-lip-dsp.mjs && node examples/test-lip-animator.mjs && node examples/test-openness-map.mjs && node examples/test-device-id.mjs && node examples/test-strip-markdown.mjs && node examples/test-loading-contrast.mjs && node examples/test-control-icon-contrast.mjs && node examples/test-avatar-authored-defaults.mjs && node examples/test-ambient-actions.mjs && node examples/test-inbox.mjs && node --test examples/test-three-validation.mjs examples/test-tracking-core.mjs examples/test-camera-tracker.mjs examples/test-body-core.mjs examples/test-body-tracker.mjs examples/test-voice-gate.mjs examples/test-mouth-fusion.mjs examples/test-quality.mjs examples/test-vrm0-pose.mjs",
     "test:ambient": "node --max-old-space-size=128 examples/test-ambient-actions.mjs",
     "test:avatar": "node examples/test-avatar-authored-defaults.mjs && node examples/test-openness-map.mjs",
     "test:tts": "node examples/test-tts-chunker.mjs && node examples/test-tts-queue.mjs",

@@ -2,6 +2,10 @@
 
 All notable changes to `ania-avatar-react` are documented here.
 
+## 1.19.2 — 2026-10-16
+
+- **VRM 0.x de braços para baixo.** Modelos VRM 0.x (exportações antigas do VRoid, amostras CC0 do VRoid Project) ficavam com os braços para cima e acenavam espelhado: o three-vrm mantém os ossos normalizados desses modelos no referencial de antes do `rotateVRM0`. A pose procedural (idle, acenar, concordar, câmera, braços) agora inverte X e Z de cada osso normalizado nos VRM 0.x, a mesma correção do exemplo Mixamo do three-vrm. VRM 1.0 e clipes GLB não mudam. Teste: `examples/test-vrm0-pose.mjs`.
+
 ## 1.19.1 — 2026-10-16
 
 - **3D à prova de PC fraco** (pedido do Robson: o navegador do trabalho não aguentou o player 3D). Medido com GPU por software (SwiftShader) e processador 6× mais lento: Estudante no 3D leve de 5 para 21–23 quadros/s; maior travada da aba de 6,6 s para menos de 0,7 s.
