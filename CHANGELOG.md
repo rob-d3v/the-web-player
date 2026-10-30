@@ -830,7 +830,7 @@ natural pause between them.
   Pragmatic abbreviation/number handling: does NOT split on a `.` that is
   clearly mid-token — single-capital initials ("R. Pereira"), known
   abbreviations ("Dr.", "Sr.", "Sra.", "etc."), decimals/thousands ("3.14",
-  "1.500", "R$ 1.500,00"), and domains/file-exts ("aniamodels.shop",
+  "1.500", "R$ 1.500,00"), and domains/file-exts ("avatar.diatech.solutions",
   "index.html"). Very short fragments (< ~12 chars) are merged into the
   neighbouring chunk so the avatar never speaks a 1-word blip. Optional
   `maxChunkChars` hard-wraps comma-spliced run-ons.

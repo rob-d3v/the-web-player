@@ -19,7 +19,7 @@
  *        capital and the token is short), common pt/en abbreviations,
  *      * a digit on BOTH sides ("1.000", "3.14", "R$ 1.500,00"),
  *      * a decimal/thousands dot,
- *      * a URL / domain / file-extension dot ("aniamodels.shop", "file.json").
+ *      * a URL / domain / file-extension dot ("avatar.diatech.solutions", "file.json").
  *  - Merge very short trailing fragments into the NEXT chunk (min ~12 chars)
  *    so we never speak a 1-word blip like "Sim." on its own.
  *  - Optionally hard-wrap chunks longer than `maxChunkChars` at the last
@@ -74,7 +74,7 @@ const isAbbreviationOrNumberDot = (text, i) => {
   if (isDigit(prev) && isDigit(next)) return true;
 
   // Dot directly followed by a letter/digit with no space => mid-token, e.g.
-  // a domain or file ext: "aniamodels.shop", "index.html", "v1.8.0".
+  // a domain or file ext: "avatar.diatech.solutions", "index.html", "v1.8.0".
   if (next && !isSpace(next) && (isLetter(next) || isDigit(next))) return true;
 
   const word = wordBeforeDot(text, i);
