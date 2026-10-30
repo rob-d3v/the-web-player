@@ -1029,7 +1029,7 @@ const AvatarChatbotWidget = ({
   // A flow "interaction" is live when a flow is active AND the current node has
   // either clickable options or a typed-input spec. While it's live we PIN the
   // current question at the top of the interaction area and let only the options
-  // scroll — so the question is never buried (operator's bug on housestudio.online).
+  // scroll — so the question is never buried (operator's bug on housestudio.diatech.solutions).
   const flowNode = activeFlow ? flow_.currentNode : null;
   const flowNodeActive = !!(
     flowNode && (flow_.currentInput || flow_.visibleOptions.length > 0)

@@ -12593,7 +12593,7 @@ const formatBytes = (bytes) => {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 };
-const DEFAULT_LIP_SYNC_SERVER_URL = "https://0iadasasasmasmdams2ma22xxhhh2.housestudio.online";
+const DEFAULT_LIP_SYNC_SERVER_URL = "https://0iadasasasmasmdams2ma22xxhhh2.diatech.solutions";
 const DEFAULT_MAX_CANDIDATES = 5;
 const DEFAULT_TIMEOUT_MS = 8e3;
 const trimUrl = (serverUrl) => String(serverUrl || "").replace(/\/+$/, "");

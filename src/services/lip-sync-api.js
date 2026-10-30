@@ -32,7 +32,7 @@
  * Sem `/api` no fim: as funções abaixo montam o caminho completo.
  */
 export const DEFAULT_LIP_SYNC_SERVER_URL =
-  'https://0iadasasasmasmdams2ma22xxhhh2.housestudio.online';
+  'https://0iadasasasmasmdams2ma22xxhhh2.diatech.solutions';
 
 /** Quantas configs baixar para comparar antes de escolher (o servidor guarda até 10). */
 const DEFAULT_MAX_CANDIDATES = 5;
